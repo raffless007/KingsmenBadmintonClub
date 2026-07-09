@@ -126,13 +126,45 @@ function upcomingBadmintonSessions() {
   return [...new Set(dates)].sort().slice(0, 8);
 }
 
+function eventDefaults(eventDate) {
+  const day = new Date(`${eventDate}T12:00:00Z`).getUTCDay();
+  if (day === 4) {
+    return {
+      event_date: eventDate,
+      location: "Sydney Sports Club",
+      suburb: "Kings Park",
+      court_1_name: "Court 6",
+      court_2_name: "Court 5",
+      court_2_enabled: true,
+    };
+  }
+  return {
+    event_date: eventDate,
+    location: "BadmintonWorx Norwest",
+    suburb: "Subject to availability",
+    court_1_name: "Court 1",
+    court_2_name: "Court 2",
+    court_2_enabled: true,
+  };
+}
+
 async function ensureUpcomingEvents() {
-  const events = upcomingBadmintonSessions().map(event_date => ({ event_date }));
-  await db("events?on_conflict=event_date", {
-    method: "POST",
-    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-    body: JSON.stringify(events),
-  });
+  const events = upcomingBadmintonSessions().map(eventDefaults);
+  try {
+    await db("events?on_conflict=event_date", {
+      method: "POST",
+      headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify(events),
+    });
+  } catch (error) {
+    if (!String(error.message).includes("court_1_name")) throw error;
+    const compatibleEvents = events.map(({ court_1_name, ...event }) => event);
+    await db("events?on_conflict=event_date", {
+      method: "POST",
+      headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify(compatibleEvents),
+    });
+  }
 }
 
 function timezoneOffsetMs(date, timeZone) {
@@ -338,12 +370,20 @@ async function changePasscode(body) {
 }
 
 async function saveEvent(body) {
-  const allowed = ["event_date", "start_time", "end_time", "location", "suburb", "court_fee", "court_2_enabled", "court_2_name", "court_2_start_time", "court_2_end_time", "court_2_fee", "shuttle_fee", "account_closed"];
+  const allowed = ["event_date", "start_time", "end_time", "location", "suburb", "court_1_name", "court_fee", "court_2_enabled", "court_2_name", "court_2_start_time", "court_2_end_time", "court_2_fee", "shuttle_fee", "account_closed"];
   const update = Object.fromEntries(Object.entries(body.changes || {}).filter(([key]) => allowed.includes(key)));
   update.updated_at = new Date().toISOString();
-  await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
-    method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(update),
-  });
+  try {
+    await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(update),
+    });
+  } catch (error) {
+    if (!String(error.message).includes("court_1_name")) throw error;
+    const { court_1_name, ...compatibleUpdate } = update;
+    await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(compatibleUpdate),
+    });
+  }
   return reply({ ok: true });
 }
 
