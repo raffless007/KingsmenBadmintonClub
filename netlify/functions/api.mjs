@@ -7,7 +7,7 @@ import {
 } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL?.replace(/\/+$/, "");
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET;
 const INITIAL_PASSCODE = process.env.INITIAL_ADMIN_PASSCODE || "1234";
@@ -80,7 +80,10 @@ async function db(path, options = {}) {
       ...options.headers,
     },
   });
-  if (!response.ok) throw new Error(`Database request failed: ${await response.text()}`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Database request failed (${response.status}) ${path}: ${detail}`);
+  }
   const text = await response.text();
   return text ? JSON.parse(text) : null;
 }
@@ -344,6 +347,20 @@ async function saveEvent(body) {
   return reply({ ok: true });
 }
 
+async function deleteEvent(body) {
+  if (!body.eventId) return reply({ error: "Event not found." }, 404);
+  const event = await getEvent(body.eventId);
+  if (!event) return reply({ error: "Event not found." }, 404);
+  if (new Date() >= localDateTimeToUtc(event.event_date, eventStartTime(event), event.timezone)) {
+    return reply({ error: "Only upcoming events can be deleted from this screen." }, 409);
+  }
+  await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
+    method: "DELETE",
+    headers: { Prefer: "return=minimal" },
+  });
+  return reply({ ok: true });
+}
+
 async function addPlayer(body) {
   const name = String(body.name || "").trim();
   if (name.length < 2 || name.length > 80) return reply({ error: "Enter a valid player name." }, 400);
@@ -555,12 +572,13 @@ export default async (req) => {
       return reply(await adminState());
     }
 
-    if (!["admin-change-passcode", "admin-save-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media"].includes(action)) {
+    if (!["admin-change-passcode", "admin-save-event", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
     if (action === "admin-change-passcode") return changePasscode(body);
     if (action === "admin-save-event") return saveEvent(body);
+    if (action === "admin-delete-event") return deleteEvent(body);
     if (action === "admin-add-player") return addPlayer(body);
     if (action === "admin-update-player") return updatePlayer(body);
     if (action === "admin-remove-player") return removePlayer(body);
@@ -574,8 +592,12 @@ export default async (req) => {
     if (error.message === "Server environment variables are not configured.") {
       return reply({ error: "Netlify environment variables are not configured. Check SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and ADMIN_SESSION_SECRET, then redeploy." }, 500);
     }
-    if (error.message?.startsWith("Database request failed:")) {
-      return reply({ error: "Supabase request failed. Check that schema.sql was run and that SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are correct." }, 500);
+    if (error.message?.startsWith("Database request failed")) {
+      return reply({
+        error: "Supabase request failed.",
+        detail: error.message,
+        next: "Use the detail field to identify whether this is a missing table, wrong key, RLS/permission issue, or SQL schema problem.",
+      }, 500);
     }
     return reply({ error: "The server could not complete that request." }, 500);
   }
