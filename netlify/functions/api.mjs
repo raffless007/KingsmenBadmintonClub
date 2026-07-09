@@ -571,6 +571,12 @@ export default async (req) => {
     if (action === "admin-delete-media") return adminDeleteMedia(body);
   } catch (error) {
     console.error(error);
+    if (error.message === "Server environment variables are not configured.") {
+      return reply({ error: "Netlify environment variables are not configured. Check SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and ADMIN_SESSION_SECRET, then redeploy." }, 500);
+    }
+    if (error.message?.startsWith("Database request failed:")) {
+      return reply({ error: "Supabase request failed. Check that schema.sql was run and that SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are correct." }, 500);
+    }
     return reply({ error: "The server could not complete that request." }, 500);
   }
 };
