@@ -7,12 +7,12 @@ import {
 } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL?.replace(/\/+$/, "");
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET;
 const INITIAL_PASSCODE = process.env.INITIAL_ADMIN_PASSCODE || "1234";
 const SYDNEY = "Australia/Sydney";
-const MEDIA_BUCKET = "tennis-media";
+const MEDIA_BUCKET = "kingsmen-media";
 const MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 
 const headers = { "content-type": "application/json; charset=utf-8" };
@@ -41,6 +41,30 @@ function totalCourtFee(event) {
   return Number(event.court_fee) + (event.court_2_enabled ? Number(event.court_2_fee || 0) : 0);
 }
 
+function eventDurationHours(event) {
+  const start = event.start_time.split(":").map(Number);
+  const end = event.end_time.split(":").map(Number);
+  const startMinutes = start[0] * 60 + start[1];
+  const endMinutes = end[0] * 60 + end[1];
+  return Math.max((endMinutes - startMinutes) / 60, 0.25);
+}
+
+function playerHoursMap(rows, event) {
+  const fallback = eventDurationHours(event);
+  return new Map((rows || []).map(row => [row.player_id, Number(row.hours_played || fallback)]));
+}
+
+function calculatePlayerAmount(event, attendingRows, hoursRows, playerId) {
+  const fallback = eventDurationHours(event);
+  const hoursByPlayer = playerHoursMap(hoursRows, event);
+  const playerIds = attendingRows.map(row => row.player_id);
+  const totalHours = playerIds.reduce((sum, id) => sum + (hoursByPlayer.get(id) || fallback), 0);
+  if (!totalHours) return 0;
+  const playerHours = hoursByPlayer.get(playerId) || fallback;
+  const totalCost = totalCourtFee(event) + Number(event.shuttle_fee || 0);
+  return Number((totalCost * playerHours / totalHours).toFixed(2));
+}
+
 function publicMediaUrl(path) {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   return `${SUPABASE_URL}/storage/v1/object/public/${MEDIA_BUCKET}/${encoded}`;
@@ -56,7 +80,10 @@ async function db(path, options = {}) {
       ...options.headers,
     },
   });
-  if (!response.ok) throw new Error(`Database request failed: ${await response.text()}`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Database request failed (${response.status}) ${path}: ${detail}`);
+  }
   const text = await response.text();
   return text ? JSON.parse(text) : null;
 }
@@ -74,36 +101,70 @@ function dateString(date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
-function upcomingWednesdays() {
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function nextDateForDay(local, targetDay, nowHour) {
+  let delta = (targetDay - local.getUTCDay() + 7) % 7;
+  if (delta === 0 && nowHour >= 23) delta = 7;
+  return addDays(local, delta);
+}
+
+function upcomingBadmintonSessions() {
   const now = datePartsInSydney();
   const local = new Date(Date.UTC(now.year, now.month - 1, now.day));
-  let delta = (3 - local.getUTCDay() + 7) % 7;
-  if (delta === 0 && now.hour >= 22) delta = 7;
-  local.setUTCDate(local.getUTCDate() + delta);
-  return Array.from({ length: 4 }, (_, index) => {
-    const d = new Date(local);
-    d.setUTCDate(d.getUTCDate() + index * 7);
-    return dateString(d);
-  });
+  const seeds = [nextDateForDay(local, 4, now.hour), nextDateForDay(local, 1, now.hour)];
+  const dates = [];
+  for (const seed of seeds) {
+    for (let index = 0; index < 6; index += 1) {
+      dates.push(dateString(addDays(seed, index * 7)));
+    }
+  }
+  return [...new Set(dates)].sort().slice(0, 8);
+}
+
+function eventDefaults(eventDate) {
+  const day = new Date(`${eventDate}T12:00:00Z`).getUTCDay();
+  if (day === 4) {
+    return {
+      event_date: eventDate,
+      location: "Sydney Sports Club",
+      suburb: "Kings Park",
+      court_1_name: "Court 6",
+      court_2_name: "Court 5",
+      court_2_enabled: true,
+    };
+  }
+  return {
+    event_date: eventDate,
+    location: "BadmintonWorx Norwest",
+    suburb: "Subject to availability",
+    court_1_name: "Court 1",
+    court_2_name: "Court 2",
+    court_2_enabled: true,
+  };
 }
 
 async function ensureUpcomingEvents() {
-  const deletedDates = new Set((await db("deleted_event_dates?select=event_date")).map(row => row.event_date));
-  const events = upcomingWednesdays().filter(event_date => !deletedDates.has(event_date)).map(event_date => ({ event_date }));
-  if (events.length) {
+  const events = upcomingBadmintonSessions().map(eventDefaults);
+  try {
     await db("events?on_conflict=event_date", {
       method: "POST",
-      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
       body: JSON.stringify(events),
     });
+  } catch (error) {
+    if (!String(error.message).includes("court_1_name")) throw error;
+    const compatibleEvents = events.map(({ court_1_name, ...event }) => event);
+    await db("events?on_conflict=event_date", {
+      method: "POST",
+      headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify(compatibleEvents),
+    });
   }
-  const now = datePartsInSydney();
-  const today = `${now.year}-${String(now.month).padStart(2, "0")}-${String(now.day).padStart(2, "0")}`;
-  await db(`events?event_date=gte.${today}&court_fee=eq.52`, {
-    method: "PATCH",
-    headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ court_fee: 54, updated_at: new Date().toISOString() }),
-  });
 }
 
 function timezoneOffsetMs(date, timeZone) {
@@ -179,8 +240,9 @@ async function appState() {
     db("match_scores?select=*&order=created_at.asc"),
     db("media_items?select=*&order=captured_at.desc,created_at.desc"),
   ]);
+  const playerHours = await db("event_player_hours?select=event_id,player_id,hours_played,updated_at");
   const media = mediaRows.map(item => ({ ...item, public_url: publicMediaUrl(item.storage_path) }));
-  return { players, events, eois, payments, scores, media, serverNow: new Date().toISOString() };
+  return { players, events, eois, payments, scores, media, playerHours, serverNow: new Date().toISOString() };
 }
 
 async function adminState() {
@@ -207,7 +269,8 @@ async function markPaid(body) {
   if (new Date() < localDateTimeToUtc(event.event_date, eventEndTime(event), event.timezone)) return reply({ error: "Payments open after the game finishes." }, 409);
   const attending = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&select=player_id`);
   if (!attending.some(row => row.player_id === body.playerId)) return reply({ error: "Only players marked In can confirm payment." }, 403);
-  const amount = Number((totalCourtFee(event) / attending.length + Number(event.ball_fee)).toFixed(2));
+  const hours = await db(`event_player_hours?event_id=eq.${encodeURIComponent(body.eventId)}&select=player_id,hours_played`);
+  const amount = calculatePlayerAmount(event, attending, hours, body.playerId);
   await db("payments?on_conflict=event_id,player_id", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -216,24 +279,41 @@ async function markPaid(body) {
   return reply({ ok: true, amount });
 }
 
-function validTennisScore(gamesA, gamesB, tiebreakA, tiebreakB) {
-  if (![gamesA, gamesB].every(value => Number.isInteger(value) && value >= 0 && value <= 4)) return { valid: false };
-  const regular = (gamesA === 4 && gamesB <= 2) || (gamesB === 4 && gamesA <= 2);
-  if (regular) return { valid: true, tiebreakA: null, tiebreakB: null };
-  const tiebreakSet = (gamesA === 4 && gamesB === 3) || (gamesB === 4 && gamesA === 3);
-  if (!tiebreakSet || !Number.isInteger(tiebreakA) || !Number.isInteger(tiebreakB)) return { valid: false };
-  const aWon = gamesA === 4;
-  const winningPoints = aWon ? tiebreakA : tiebreakB;
-  const losingPoints = aWon ? tiebreakB : tiebreakA;
-  const valid = losingPoints >= 0 && winningPoints >= 5 && winningPoints - losingPoints >= 2;
-  return { valid, tiebreakA, tiebreakB };
+async function updateShuttleFee(body) {
+  const event = await getEvent(body.eventId);
+  if (!event || !body.playerId) return reply({ error: "Event or player not found." }, 404);
+  if (new Date() < localDateTimeToUtc(event.event_date, eventEndTime(event), event.timezone)) {
+    return reply({ error: "Shuttle fees can be entered after the session finishes." }, 409);
+  }
+  const attending = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&select=player_id`);
+  if (!attending.some(row => row.player_id === body.playerId)) return reply({ error: "Only players from this session can update shuttle fees." }, 403);
+  const shuttleFee = Number(body.shuttleFee);
+  if (!Number.isFinite(shuttleFee) || shuttleFee < 0 || shuttleFee > 1000) return reply({ error: "Enter a valid shuttle fee." }, 400);
+  await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ shuttle_fee: shuttleFee, updated_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true });
 }
 
-export { validTennisScore };
+function validBadmintonScore(pointsA, pointsB) {
+  if (![pointsA, pointsB].every(value => Number.isInteger(value) && value >= 0 && value <= 30)) return { valid: false };
+  if (pointsA === pointsB) return { valid: false };
+  const winner = Math.max(pointsA, pointsB);
+  const loser = Math.min(pointsA, pointsB);
+  const valid = winner === 30 ? loser <= 29 : winner >= 21 && winner <= 29 && winner - loser >= 2;
+  return { valid };
+}
+
+export { validBadmintonScore };
 
 async function submitScore(body) {
   const event = await getEvent(body.eventId);
   if (!event || !body.submittedBy) return reply({ error: "Event or player not found." }, 404);
+  if (new Date() < localDateTimeToUtc(event.event_date, eventStartTime(event), event.timezone)) {
+    return reply({ error: "Scores can be added after the session starts." }, 409);
+  }
   const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&select=player_id`);
   const attending = new Set(attendingRows.map(row => row.player_id));
   if (!attending.has(body.submittedBy)) return reply({ error: "Only players marked In can enter scores." }, 403);
@@ -249,18 +329,16 @@ async function submitScore(body) {
       return reply({ error: "Each match must contain four different players from the final In list." }, 400);
     }
     const gamesA = Number(match.gamesA), gamesB = Number(match.gamesB);
-    const tiebreakA = match.tiebreakA === "" || match.tiebreakA == null ? null : Number(match.tiebreakA);
-    const tiebreakB = match.tiebreakB === "" || match.tiebreakB == null ? null : Number(match.tiebreakB);
-    const checked = validTennisScore(gamesA, gamesB, tiebreakA, tiebreakB);
-    if (!checked.valid) return reply({ error: "Every score must be 4–0, 4–1, 4–2, or 4–3 with a valid race-to-5 tie-break won by two points." }, 400);
+    const checked = validBadmintonScore(gamesA, gamesB);
+    if (!checked.valid) return reply({ error: "Enter a valid badminton score: first to 21, win by 2, capped at 30." }, 400);
     inserts.push({
       event_id: body.eventId,
       team_a_player_ids: teamA,
       team_b_player_ids: teamB,
       games_a: gamesA,
       games_b: gamesB,
-      tiebreak_a: checked.tiebreakA,
-      tiebreak_b: checked.tiebreakB,
+      tiebreak_a: null,
+      tiebreak_b: null,
       submitted_by: body.submittedBy,
     });
   }
@@ -292,24 +370,30 @@ async function changePasscode(body) {
 }
 
 async function saveEvent(body) {
-  const allowed = ["event_date", "start_time", "end_time", "location", "suburb", "court_fee", "court_2_enabled", "court_2_name", "court_2_start_time", "court_2_end_time", "court_2_fee", "ball_fee", "account_closed"];
+  const allowed = ["event_date", "start_time", "end_time", "location", "suburb", "court_1_name", "court_fee", "court_2_enabled", "court_2_name", "court_2_start_time", "court_2_end_time", "court_2_fee", "shuttle_fee", "account_closed"];
   const update = Object.fromEntries(Object.entries(body.changes || {}).filter(([key]) => allowed.includes(key)));
   update.updated_at = new Date().toISOString();
-  await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
-    method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(update),
-  });
+  try {
+    await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(update),
+    });
+  } catch (error) {
+    if (!String(error.message).includes("court_1_name")) throw error;
+    const { court_1_name, ...compatibleUpdate } = update;
+    await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(compatibleUpdate),
+    });
+  }
   return reply({ ok: true });
 }
 
 async function deleteEvent(body) {
-  if (!body.eventId) return reply({ error: "Choose an event to delete." }, 400);
+  if (!body.eventId) return reply({ error: "Event not found." }, 404);
   const event = await getEvent(body.eventId);
   if (!event) return reply({ error: "Event not found." }, 404);
-  await db("deleted_event_dates?on_conflict=event_date", {
-    method: "POST",
-    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-    body: JSON.stringify({ event_date: event.event_date, deleted_at: new Date().toISOString() }),
-  });
+  if (new Date() >= localDateTimeToUtc(event.event_date, eventStartTime(event), event.timezone)) {
+    return reply({ error: "Only upcoming events can be deleted from this screen." }, 409);
+  }
   await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
     method: "DELETE",
     headers: { Prefer: "return=minimal" },
@@ -381,7 +465,8 @@ async function adminSetPayment(body) {
   if (!attending.some(row => row.player_id === body.playerId)) {
     return reply({ error: "Only players marked In can have a payment recorded." }, 409);
   }
-  const amount = Number((totalCourtFee(event) / attending.length + Number(event.ball_fee)).toFixed(2));
+  const hours = await db(`event_player_hours?event_id=eq.${encodeURIComponent(body.eventId)}&select=player_id,hours_played`);
+  const amount = calculatePlayerAmount(event, attending, hours, body.playerId);
   await db("payments?on_conflict=event_id,player_id", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -393,6 +478,27 @@ async function adminSetPayment(body) {
       paid_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }),
+  });
+  return reply({ ok: true });
+}
+
+async function adminSetPlayerHours(body) {
+  if (!body.eventId || !body.playerId) return reply({ error: "Choose a valid event and player." }, 400);
+  const hours = Number(body.hoursPlayed);
+  if (!Number.isFinite(hours) || hours <= 0 || hours > 8) return reply({ error: "Enter hours between 0 and 8." }, 400);
+  await db("event_player_hours?on_conflict=event_id,player_id", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({
+      event_id: body.eventId,
+      player_id: body.playerId,
+      hours_played: hours,
+      updated_at: new Date().toISOString(),
+    }),
+  });
+  await db(`payments?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}`, {
+    method: "DELETE",
+    headers: { Prefer: "return=minimal" },
   });
   return reply({ ok: true });
 }
@@ -496,6 +602,7 @@ export default async (req) => {
     if (req.method === "GET" && action === "state") return reply(await appState());
     if (req.method === "POST" && action === "eoi") return submitEoi(body);
     if (req.method === "POST" && action === "paid") return markPaid(body);
+    if (req.method === "POST" && action === "shuttle-fee") return updateShuttleFee(body);
     if (req.method === "POST" && action === "score") return submitScore(body);
     if (req.method === "POST" && action === "media-upload-url") return createMediaUpload(body);
     if (req.method === "POST" && action === "media-finalize") return finalizeMediaUpload(body);
@@ -505,7 +612,7 @@ export default async (req) => {
       return reply(await adminState());
     }
 
-    if (!["admin-change-passcode", "admin-save-event", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-set-eoi", "admin-set-payment", "admin-delete-score", "admin-delete-media"].includes(action)) {
+    if (!["admin-change-passcode", "admin-save-event", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
@@ -517,10 +624,21 @@ export default async (req) => {
     if (action === "admin-remove-player") return removePlayer(body);
     if (action === "admin-set-eoi") return adminSetEoi(body);
     if (action === "admin-set-payment") return adminSetPayment(body);
+    if (action === "admin-set-hours") return adminSetPlayerHours(body);
     if (action === "admin-delete-score") return adminDeleteScore(body);
     if (action === "admin-delete-media") return adminDeleteMedia(body);
   } catch (error) {
     console.error(error);
+    if (error.message === "Server environment variables are not configured.") {
+      return reply({ error: "Netlify environment variables are not configured. Check SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and ADMIN_SESSION_SECRET, then redeploy." }, 500);
+    }
+    if (error.message?.startsWith("Database request failed")) {
+      return reply({
+        error: "Supabase request failed.",
+        detail: error.message,
+        next: "Use the detail field to identify whether this is a missing table, wrong key, RLS/permission issue, or SQL schema problem.",
+      }, 500);
+    }
     return reply({ error: "The server could not complete that request." }, 500);
   }
 };
