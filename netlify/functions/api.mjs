@@ -495,6 +495,10 @@ async function maintainThursdaySessions() {
     if (isThursdayEvent(event) && new Date() >= thursdayScheduleAt(event) && !event.schedule_generated_at) {
       await maybeGenerateEventSchedule(event.id);
     }
+    if (event.schedule_generated_at && new Date() < localDateTimeToUtc(event.event_date, eventEndTime(event), event.timezone)) {
+      const pairingSetting = await db(`app_settings?key=eq.${encodeURIComponent(`pairings:${event.id}`)}&select=key`);
+      if (!pairingSetting.length) await generateEventSchedule(event.id, { force: true });
+    }
   }
 }
 
