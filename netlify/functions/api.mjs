@@ -496,8 +496,16 @@ async function maintainThursdaySessions() {
       await maybeGenerateEventSchedule(event.id);
     }
     if (event.schedule_generated_at && new Date() < localDateTimeToUtc(event.event_date, eventEndTime(event), event.timezone)) {
-      const pairingSetting = await db(`app_settings?key=eq.${encodeURIComponent(`pairings:${event.id}`)}&select=key`);
-      if (!pairingSetting.length) await generateEventSchedule(event.id, { force: true });
+      const [pairingSetting, scheduledRows] = await Promise.all([
+        db(`app_settings?key=eq.${encodeURIComponent(`pairings:${event.id}`)}&select=value`),
+        db(`match_scores?event_id=eq.${encodeURIComponent(event.id)}&status=eq.scheduled&select=team_a_player_ids,team_b_player_ids,pairing_manual,schedule_manual`),
+      ]);
+      let savedPairings = null;
+      try { savedPairings = pairingSetting?.[0]?.value ? JSON.parse(pairingSetting[0].value) : null; } catch { savedPairings = null; }
+      const savedKeys = new Set((Array.isArray(savedPairings) ? savedPairings : []).filter(pair => Array.isArray(pair)).map(pair => pairingKey(pair)));
+      const scheduleNeedsPairingRefresh = !Array.isArray(savedPairings) || scheduledRows.some(row => !savedKeys.has(pairingKey(row.team_a_player_ids)) || !savedKeys.has(pairingKey(row.team_b_player_ids)));
+      const hasManualRows = scheduledRows.some(row => row.pairing_manual || row.schedule_manual);
+      if (scheduleNeedsPairingRefresh && !hasManualRows) await generateEventSchedule(event.id, { force: true });
     }
   }
 }
