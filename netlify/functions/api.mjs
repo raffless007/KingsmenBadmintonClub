@@ -192,6 +192,14 @@ function auditDetails(body) {
   if (body.pin !== undefined) details.pinProvided = true;
   if (body.__adminRole) details.adminRole = body.__adminRole;
   if (body.__adminIdentity) details.adminIdentity = body.__adminIdentity;
+  if (body.__pushDelivery && typeof body.__pushDelivery === "object") {
+    details.pushDelivery = {
+      configured: Boolean(body.__pushDelivery.configured),
+      sent: Number(body.__pushDelivery.sent || 0),
+      failed: Number(body.__pushDelivery.failed || 0),
+      skipped: Number(body.__pushDelivery.skipped || 0),
+    };
+  }
   return details;
 }
 
@@ -1684,15 +1692,67 @@ async function markAnnouncementRead(body) {
   return reply({ ok: true });
 }
 
+async function sendAnnouncementPush(announcement) {
+  if (!configurePush()) return { configured: false, sent: 0, failed: 0, skipped: 0 };
+  try {
+    const [subscriptions, preferences] = await Promise.all([
+      db("push_subscriptions?select=id,player_id,endpoint,p256dh,auth"),
+      db("player_notification_preferences?select=player_id,announcements"),
+    ]);
+    const announcementsEnabled = new Map((preferences || []).map((row) => [row.player_id, row.announcements !== false]));
+    const eligible = (subscriptions || []).filter((subscription) => announcementsEnabled.get(subscription.player_id) !== false);
+    const payload = JSON.stringify({
+      title: announcement.title,
+      body: announcement.body,
+      tag: `kingsmen-announcement-${announcement.id}`,
+      url: "/?page=play",
+      announcementId: announcement.id,
+      kind: announcement.kind,
+    });
+    let sent = 0;
+    let failed = 0;
+    await Promise.all(eligible.map(async (subscription) => {
+      try {
+        await webpush.sendNotification({
+          endpoint: subscription.endpoint,
+          keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+        }, payload);
+        sent += 1;
+      } catch (error) {
+        failed += 1;
+        if (error.statusCode === 404 || error.statusCode === 410) {
+          try {
+            await db(`push_subscriptions?id=eq.${encodeURIComponent(subscription.id)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+          } catch (deleteError) {
+            console.error("Expired push subscription cleanup failed", deleteError.message);
+          }
+        } else {
+          console.error("Announcement push failed", error.message);
+        }
+      }
+    }));
+    return { configured: true, sent, failed, skipped: (subscriptions || []).length - eligible.length };
+  } catch (error) {
+    console.error("Announcement push lookup failed", error);
+    return { configured: true, sent: 0, failed: 1, skipped: 0 };
+  }
+}
+
 async function createAnnouncement(body) {
   const title = String(body.title || "").trim();
   const message = String(body.body || "").trim();
   if (title.length < 2 || message.length < 2) return reply({ error: "Add a title and message." }, 400);
+  const kind = ["announcement", "message", "alert"].includes(body.kind) ? body.kind : "announcement";
   const rows = await db("announcements", {
     method: "POST", headers: { Prefer: "return=representation" },
-    body: JSON.stringify({ title: title.slice(0, 160), body: message.slice(0, 5000), kind: ["announcement", "message", "alert"].includes(body.kind) ? body.kind : "announcement", pinned: Boolean(body.pinned), created_by: body.playerId || null }),
+    body: JSON.stringify({ title: title.slice(0, 160), body: message.slice(0, 5000), kind, pinned: Boolean(body.pinned), created_by: body.playerId || null }),
   });
-  return reply({ ok: true, announcement: rows?.[0] || null });
+  const announcement = rows?.[0] || null;
+  const delivery = kind === "alert" && announcement
+    ? await sendAnnouncementPush(announcement)
+    : { configured: false, sent: 0, failed: 0, skipped: 0 };
+  body.__pushDelivery = delivery;
+  return reply({ ok: true, announcement, delivery });
 }
 
 async function updateAnnouncement(body) {
