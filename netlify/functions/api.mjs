@@ -1120,11 +1120,11 @@ async function deleteEvent(body) {
 async function addPlayer(body) {
   const name = String(body.name || "").trim();
   if (name.length < 2 || name.length > 80) return reply({ error: "Enter a valid player name." }, 400);
-  await db("players?on_conflict=name", {
-    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+  const rows = await db("players?on_conflict=name", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" },
     body: JSON.stringify({ name, active: true }),
   });
-  return reply({ ok: true });
+  return reply({ ok: true, player: rows?.[0] || null });
 }
 
 async function removePlayer(body) {
@@ -1423,6 +1423,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "media-upload-url") return createMediaUpload(body);
     if (req.method === "POST" && action === "media-finalize") return finalizeMediaUpload(body);
     if (req.method === "POST" && action === "admin-login") return adminLogin(body);
+    if (req.method === "POST" && action === "add-player") return addPlayer(body);
     if (req.method === "POST" && action === "save-pairing") return savePairing(body);
     if (req.method === "GET" && action === "admin-state") {
       if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
