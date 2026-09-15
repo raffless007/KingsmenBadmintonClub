@@ -189,6 +189,7 @@ function eventDefaults(eventDate) {
     event_date: eventDate,
     location: "BadmintonWorx Norwest",
     suburb: "Subject to availability",
+    location_id: null,
     court_1_name: "Court 1",
     court_2_name: "Court 2",
     court_2_enabled: true,
