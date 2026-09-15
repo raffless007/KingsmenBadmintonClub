@@ -24,8 +24,9 @@
     style.id = "kbcEnhancementStyles";
     style.textContent = `
       .kbc-enhancement{margin-top:20px}.kbc-enhancement .card{padding:22px}.kbc-enhancement h3{margin:0}.kbc-muted{color:var(--muted);font-size:11px}.kbc-list{display:grid;gap:10px;margin-top:14px}.kbc-list-row{display:flex;justify-content:space-between;align-items:center;gap:12px;border-top:1px solid var(--line);padding:11px 0}.kbc-list-row:first-child{border-top:0}.kbc-chip{display:inline-flex;align-items:center;gap:5px;border-radius:999px;background:#e7f7ff;color:var(--green);padding:5px 9px;font-size:9px;font-weight:900}.kbc-chip.warn{background:#fff3d6;color:#80601f}.kbc-chip.danger{background:#f8ebe4;color:var(--warn)}.kbc-calendar{margin-top:12px}.kbc-offline{display:inline-flex;align-items:center;gap:7px;background:#fff3d6;color:#80601f;border-radius:999px;padding:7px 10px;font-size:10px;font-weight:900}.kbc-offline.online{background:#e7f7ff;color:var(--green)}.kbc-fullscreen{border:1px solid var(--line);background:white;border-radius:10px;padding:8px 11px;font-size:10px;font-weight:900;cursor:pointer}.live-match:fullscreen{background:var(--paper);width:100vw;height:100vh;padding:7vh 12vw;display:grid;align-content:center}.live-match:fullscreen .live-points{font-size:clamp(72px,13vw,180px)}.live-match:fullscreen .live-team strong{font-size:clamp(22px,3vw,42px)}.live-match:fullscreen .pointbtn{font-size:clamp(16px,2vw,28px);padding:22px}.kbc-announcement{border-left:4px solid var(--green)}.kbc-announcement.alert{border-left-color:var(--warn)}.kbc-announcement p{white-space:pre-wrap;line-height:1.55}.kbc-stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kbc-stat{border:1px solid var(--line);border-radius:12px;padding:12px}.kbc-stat small,.kbc-stat strong{display:block}.kbc-stat small{color:var(--muted);font-size:8px;letter-spacing:1px}.kbc-stat strong{font-size:22px;margin-top:3px}.kbc-entry{border:1px solid var(--line);border-radius:12px;padding:12px}.kbc-match{border-top:1px solid var(--line);padding:12px 0;display:grid;grid-template-columns:90px 1fr auto;gap:10px;align-items:center}.kbc-match:first-child{border-top:0}.kbc-modal-grid{display:grid;gap:12px}.kbc-modal-grid label{display:flex;align-items:center;gap:10px;font-size:12px}.kbc-modal-grid input{width:18px;height:18px}.kbc-audit-json{max-width:280px;white-space:pre-wrap;word-break:break-word}.kbc-audit-human{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fbfdfe}.kbc-audit-human + .kbc-audit-human{margin-top:10px}.kbc-audit-human p{margin:5px 0 0;font-size:12px;line-height:1.45}.kbc-audit-human .kbc-audit-meta{display:flex;justify-content:space-between;gap:12px;align-items:center}.kbc-audit-human .kbc-audit-change{font-size:14px;font-weight:850;margin-top:7px}.kbc-audit-human details{margin-top:9px}.kbc-audit-human summary{cursor:pointer;color:var(--green);font-size:10px;font-weight:900}.kbc-admin-tools{display:grid;gap:15px;margin-top:18px}.kbc-admin-tools textarea{min-height:100px}.kbc-admin-tools .actions{justify-content:flex-start}.kbc-role-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end}.kbc-delete{color:var(--warn)}
-      .kbc-role-permissions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:9px}.kbc-role-permission{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:9px;padding:8px;font-size:10px}.kbc-role-permission input{accent-color:var(--green)}.kbc-role-card{border-top:1px solid var(--line);padding:12px 0}.kbc-role-card:first-child{border-top:0}.kbc-role-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.kbc-admin-tools{padding:22px}
-      @media(max-width:800px){.kbc-stat-grid{grid-template-columns:repeat(2,1fr)}.kbc-match{grid-template-columns:1fr}.kbc-role-grid,.kbc-role-permissions{grid-template-columns:1fr}.kbc-admin-tools{padding:16px}.live-match:fullscreen{padding:5vh 5vw}}
+      .kbc-role-permissions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:9px}.kbc-role-permission{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:9px;padding:8px;font-size:10px}.kbc-role-permission input{accent-color:var(--green)}.kbc-role-card{border-top:1px solid var(--line);padding:12px 0}.kbc-role-card:first-child{border-top:0}.kbc-role-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.kbc-admin-tools{padding:22px}.kbc-audit-log-card,.kbc-audit-snapshots-card{padding:22px}.kbc-audit-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:14px}.kbc-audit-human{min-width:0;margin:0}.kbc-audit-human + .kbc-audit-human{margin-top:0}.kbc-audit-human .kbc-audit-meta{align-items:flex-start;flex-direction:column;gap:7px}.kbc-audit-human .kbc-audit-person{font-size:13px;line-height:1.25}.kbc-audit-human .kbc-audit-context{color:var(--muted);font-size:10px;line-height:1.35}.kbc-audit-human .kbc-audit-change{font-size:12px;line-height:1.4}
+      @media(max-width:1100px){.kbc-audit-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+      @media(max-width:800px){.kbc-stat-grid{grid-template-columns:repeat(2,1fr)}.kbc-match{grid-template-columns:1fr}.kbc-role-grid,.kbc-role-permissions{grid-template-columns:1fr}.kbc-admin-tools,.kbc-audit-log-card,.kbc-audit-snapshots-card{padding:16px}.kbc-audit-grid{grid-template-columns:1fr}.live-match:fullscreen{padding:5vh 5vw}}
     `;
     document.head.appendChild(style);
   }
@@ -286,19 +287,55 @@
     return log.target_type ? `the ${String(log.target_type).replaceAll("_", " ")}` : "the clubhouse";
   }
 
+  function auditRoleLabel(log) {
+    const role = log.details?.adminRole;
+    if (!role) return "Owner session";
+    return ({ owner: "Owner", admin: "Administrator", treasurer: "Treasurer", scheduler: "Session Coordinator", scorekeeper: "Scorekeeper", media: "Media Manager" }[role] || role);
+  }
+
   function auditActor(log) {
-    if (log.actor_type === "admin") return "An admin";
+    if (log.actor_type === "admin") return log.actor_id ? playerName(log.actor_id) : "Owner (shared passcode)";
     if (log.actor_type === "player") return playerName(log.actor_id);
     return "A visitor";
   }
 
   function auditArea(action) {
+    const areas = {
+      "admin-save-event": "Weekly events",
+      "admin-delete-event": "Weekly events",
+      "admin-generate-schedule": "Schedules and matchups",
+      "admin-save-match": "Schedules and matchups",
+      "admin-set-eoi": "Attendance and EOI",
+      "admin-set-payment": "Payments and shuttle fees",
+      "admin-set-hours": "Payments and shuttle fees",
+      "admin-delete-score": "Scores and live scoring",
+      "admin-create-tournament": "Tournaments",
+      "admin-generate-tournament-draw": "Tournaments",
+      "admin-save-tournament-match": "Scores and live scoring",
+      "admin-create-announcement": "Announcements",
+      "admin-update-announcement": "Announcements",
+      "admin-delete-announcement": "Announcements",
+      "admin-set-role": "Admin roles",
+      "admin-create-role": "Admin roles",
+      "admin-update-role": "Admin roles",
+      "admin-delete-role": "Admin roles",
+      "admin-reset-player-pin": "Player roster and PINs",
+      "admin-add-player": "Player roster and PINs",
+      "admin-update-player": "Player roster and PINs",
+      "admin-remove-player": "Player roster and PINs",
+      "admin-change-passcode": "Admin security",
+      "admin-revert-audit": "Audit log",
+      "admin-delete-media": "Media",
+      "admin-state": "Admin settings",
+      "admin-audit-log": "Audit log",
+    };
+    if (areas[action]) return areas[action];
     if (["eoi", "paid", "shuttle-fee", "save-pairing", "announcement-read"].includes(action)) return "the weekly session area";
     if (["score", "live-score", "live-score-new"].includes(action)) return "the Scores area";
     if (["media-upload-url", "media-finalize", "admin-delete-media"].includes(action)) return "the Media area";
     if (action.includes("tournament")) return "the Tournaments area";
     if (["push-subscribe", "push-unsubscribe", "notification-preferences"].includes(action)) return "notification settings";
-    if (action.startsWith("admin-") || action === "admin-state" || action === "admin-audit-log") return "Admin controls";
+    if (action.startsWith("admin-")) return "Admin settings";
     if (["player-pin", "add-player"].includes(action)) return "player sign-in or profile settings";
     return "the clubhouse";
   }
@@ -365,8 +402,8 @@
 
   function renderPlainAuditLog(panel, logs) {
     let section = panel.querySelector("#kbcAuditPlainEnglish");
-    if (!section) { section = document.createElement("article"); section.id = "kbcAuditPlainEnglish"; section.className = "card kbc-enhancement"; panel.prepend(section); }
-    section.innerHTML = `<p class="eyebrow">PLAIN-ENGLISH ACTIVITY</p><h3>What people accessed and changed</h3><p class="kbc-muted">Each entry explains the person, the area they used, the change they made, and the outcome. Technical details remain available in the table below.</p><div style="margin-top:14px">${logs.slice(0, 50).map((log) => `<div class="kbc-audit-human"><div class="kbc-audit-meta"><strong>${esc(auditActor(log))}</strong><span class="kbc-chip ${log.succeeded ? "" : "danger"}">${log.succeeded ? "Completed" : "Failed"}</span></div><p><strong>Accessed:</strong> ${esc(auditArea(log.action))} - ${esc(new Date(log.created_at).toLocaleString("en-AU"))}</p><p class="kbc-audit-change"><strong>Changed:</strong> ${esc(auditChange(log))}</p><p><strong>Result:</strong> ${log.succeeded ? "The request was completed successfully." : `No data was changed because the request failed${log.status_code ? ` (${log.status_code})` : ""}.`}</p><details><summary>Technical record</summary><div class="kbc-audit-json"><strong>Action</strong> ${esc(log.action)}<br><strong>Target</strong> ${esc(log.target_type || "-")} ${esc(log.target_id || "")}<br><strong>Details</strong> ${esc(JSON.stringify(log.details || {}, null, 2))}</div></details></div>`).join("")}</div>`;
+    if (!section) { section = document.createElement("article"); section.id = "kbcAuditPlainEnglish"; section.className = "card kbc-enhancement kbc-audit-log-card"; panel.prepend(section); }
+    section.innerHTML = `<h3>Activity Audit Log</h3><div class="kbc-audit-grid">${logs.slice(0, 50).map((log) => `<div class="kbc-audit-human"><div class="kbc-audit-meta"><strong class="kbc-audit-person">${esc(auditActor(log))}</strong><span class="kbc-chip">${esc(auditRoleLabel(log))}</span><span class="kbc-chip ${log.succeeded ? "" : "danger"}">${log.succeeded ? "Completed" : "Failed"}</span></div><p class="kbc-audit-context"><strong>${esc(auditArea(log.action))}</strong><br>${esc(new Date(log.created_at).toLocaleString("en-AU"))}</p><p class="kbc-audit-change">${esc(auditChange(log))}</p><p><strong>Result:</strong> ${log.succeeded ? "Completed successfully." : `Failed${log.status_code ? ` (${log.status_code})` : ""}.`}</p><details><summary>Technical record</summary><div class="kbc-audit-json"><strong>Action</strong> ${esc(log.action)}<br><strong>Target</strong> ${esc(log.target_type || "-")} ${esc(log.target_id || "")}<br><strong>Details</strong> ${esc(JSON.stringify(log.details || {}, null, 2))}</div></details></div>`).join("")}</div>`;
   }
 
   function renderAuditEnhancements() {
@@ -378,7 +415,7 @@
     const reversible = logs.filter((log) => log.before_data && !log.reverted_at).slice(0, 20);
     const section = document.createElement("article");
     section.id = "kbcAuditSnapshots";
-    section.className = "card kbc-enhancement";
+    section.className = "card kbc-enhancement kbc-audit-snapshots-card";
     section.innerHTML = `<p class="eyebrow">BEFORE AND AFTER</p><h3>Reversible change history</h3><p class="kbc-muted">Use Revert only when the earlier value should be restored.</p><div class="kbc-list">${reversible.length ? reversible.map((log) => `<div class="kbc-list-row"><div><strong>${esc(log.action)}</strong><p class="kbc-muted">${esc(log.target_type)} · ${new Date(log.created_at).toLocaleString("en-AU")}</p><details><summary>View snapshot</summary><div class="kbc-audit-json"><strong>Before</strong> ${esc(JSON.stringify(log.before_data, null, 2))}<br><strong>After</strong> ${esc(JSON.stringify(log.after_data, null, 2))}</div></details></div><button class="secondary kbc-delete" data-kbc-revert="${log.id}">Revert</button></div>`).join("") : `<p class="kbc-muted">No reversible changes are available.</p>`}</div>`;
     panel.appendChild(section);
     section.querySelectorAll("[data-kbc-revert]").forEach((button) => button.onclick = async () => { if (!confirm("Restore the before snapshot for this action?")) return; try { await request()("admin-revert-audit", "POST", { auditId: button.dataset.kbcRevert }, true); notify("Change reverted"); refresh(); } catch (error) { notify(error.message); } });

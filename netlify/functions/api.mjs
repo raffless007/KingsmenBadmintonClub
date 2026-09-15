@@ -153,7 +153,8 @@ async function db(path, options = {}) {
 }
 
 function auditActor(req, action, body) {
-  if (isAdmin(req)) return { type: "admin", id: null };
+  if (action === "admin-login" && body.playerId) return { type: "admin", id: String(body.playerId) };
+  if (isAdmin(req)) return { type: "admin", id: adminSession(req)?.playerId || null };
   const playerId = body.playerId || body.submittedBy || (action === "player-pin" ? body.playerId : null);
   return playerId ? { type: "player", id: String(playerId) } : { type: "anonymous", id: null };
 }
@@ -187,12 +188,19 @@ function auditDetails(body) {
   if (body.changes && typeof body.changes === "object") details.changedFields = Object.keys(body.changes).slice(0, 40);
   if (body.currentPasscode !== undefined || body.newPasscode !== undefined) details.passcodeChanged = true;
   if (body.pin !== undefined) details.pinProvided = true;
+  if (body.__adminRole) details.adminRole = body.__adminRole;
+  if (body.__adminIdentity) details.adminIdentity = body.__adminIdentity;
   return details;
 }
 
 async function writeAuditLog({ req, action, body, response, failed = false }) {
   const actor = auditActor(req, action, body);
   const target = auditTarget(action, body);
+  const session = isAdmin(req) ? adminSession(req) : null;
+  const details = {
+    ...auditDetails(body),
+    ...(session ? { adminRole: session.role, adminIdentity: session.playerId ? "player-pin" : "shared-passcode" } : {}),
+  };
   try {
     await db("audit_logs", {
       method: "POST",
@@ -205,7 +213,7 @@ async function writeAuditLog({ req, action, body, response, failed = false }) {
         target_id: target.id,
         status_code: response?.status || 500,
         succeeded: !failed && (response?.status || 500) < 400,
-        details: auditDetails(body),
+        details,
         before_data: body.__auditBefore || null,
         after_data: body.__auditAfter || null,
       }),
@@ -758,6 +766,12 @@ function signSession(role = "owner") {
   return `${payload}.${signature}`;
 }
 
+function signAdminSession(role = "owner", playerId = null) {
+  const payload = Buffer.from(JSON.stringify({ role, playerId, exp: Date.now() + 8 * 60 * 60 * 1000 })).toString("base64url");
+  const signature = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
 function signPlayerSession(playerId) {
   const payload = Buffer.from(JSON.stringify({ kind: "player", playerId, exp: Date.now() + 12 * 60 * 60 * 1000 })).toString("base64url");
   const signature = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
@@ -795,6 +809,18 @@ function adminRole(req) {
   try {
     const session = JSON.parse(Buffer.from(payload, "base64url").toString());
     return session.exp > Date.now() ? (session.role || "owner") : null;
+  } catch { return null; }
+}
+
+function adminSession(req) {
+  const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+  const expected = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try {
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString());
+    return session.exp > Date.now() && session.role ? session : null;
   } catch { return null; }
 }
 
@@ -1327,7 +1353,9 @@ async function adminLogin(body) {
     const roleDefinition = await getRoleDefinition(role);
     const validRole = role === "owner" || Boolean(roleDefinition?.active);
     if (!players?.[0]?.pin_hash || !verifyPasscode(String(body.playerPin), players[0].pin_hash) || !role || !validRole) return reply({ error: "Admin player PIN or role is incorrect." }, 401);
-    return reply({ ok: true, role, token: signSession(role) });
+    body.__adminRole = role;
+    body.__adminIdentity = "player-pin";
+    return reply({ ok: true, role, token: signAdminSession(role, body.playerId) });
   }
   if (!/^\d{4,8}$/.test(body.passcode || "")) return reply({ error: "Invalid passcode." }, 401);
   let stored = await getPasscodeSetting();
@@ -1336,7 +1364,9 @@ async function adminLogin(body) {
     stored = await getPasscodeSetting();
   }
   if (!verifyPasscode(body.passcode, stored)) return reply({ error: "Incorrect passcode." }, 401);
-  return reply({ ok: true, role: "owner", token: signSession("owner") });
+  body.__adminRole = "owner";
+  body.__adminIdentity = "shared-passcode";
+  return reply({ ok: true, role: "owner", token: signAdminSession("owner") });
 }
 
 async function changePasscode(body) {
