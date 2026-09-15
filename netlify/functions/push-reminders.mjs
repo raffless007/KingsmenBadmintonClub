@@ -67,13 +67,15 @@ export default async () => {
   }
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
   const today = localDate();
-  const [subscriptions, events, eois, payments, sent] = await Promise.all([
+  const [subscriptions, events, eois, payments, sent, preferences] = await Promise.all([
     db("push_subscriptions?select=player_id,endpoint,p256dh,auth"),
     db(`events?event_date=lte.${today}&select=id,event_date,end_time,court_2_enabled,court_2_end_time,court_3_enabled,court_3_end_time`),
     db("eois?select=event_id,player_id,status,penalty_amount&status=in.(yes,no)"),
     db("payments?select=event_id,player_id,paid"),
     db(`push_notification_log?reminder_date=eq.${today}&notification_type=eq.pending_payment&select=event_id,player_id`),
+    db("player_notification_preferences?select=player_id,payment_reminders"),
   ]);
+  const paymentReminders = new Map((preferences || []).map(row => [row.player_id, row.payment_reminders !== false]));
   const paid = new Set((payments || []).filter(row => row.paid).map(row => `${row.event_id}:${row.player_id}`));
   const alreadySent = new Set((sent || []).map(row => `${row.event_id}:${row.player_id}`));
   const subscriptionsByPlayer = new Map();
@@ -88,6 +90,7 @@ export default async () => {
     const pending = (eois || []).filter(row => row.event_id === event.id
       && (row.status === "yes" || (row.status === "no" && Number(row.penalty_amount || 0) > 0))
       && !paid.has(`${event.id}:${row.player_id}`)
+      && paymentReminders.get(row.player_id) !== false
       && !alreadySent.has(`${event.id}:${row.player_id}`));
     for (const row of pending) {
       const playerSubscriptions = subscriptionsByPlayer.get(row.player_id) || [];

@@ -1248,6 +1248,12 @@ async function recordScoreAction(body) {
 }
 
 async function adminLogin(body) {
+  if (body.playerId && body.playerPin) {
+    const players = await db(`players?id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=id,name,pin_hash`);
+    const roles = await db(`admin_roles?player_id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=role`);
+    if (!players?.[0]?.pin_hash || !verifyPasscode(String(body.playerPin), players[0].pin_hash) || !roles?.[0]) return reply({ error: "Admin player PIN or role is incorrect." }, 401);
+    return reply({ ok: true, role: roles[0].role, token: signSession(roles[0].role) });
+  }
   if (!/^\d{4,8}$/.test(body.passcode || "")) return reply({ error: "Invalid passcode." }, 401);
   let stored = await getPasscodeSetting();
   if (!stored && body.passcode === INITIAL_PASSCODE) {
@@ -1255,7 +1261,7 @@ async function adminLogin(body) {
     stored = await getPasscodeSetting();
   }
   if (!verifyPasscode(body.passcode, stored)) return reply({ error: "Incorrect passcode." }, 401);
-  return reply({ ok: true, token: signSession() });
+  return reply({ ok: true, role: "owner", token: signSession("owner") });
 }
 
 async function changePasscode(body) {
@@ -1920,6 +1926,12 @@ export default async (req) => {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));
+    const permissionForAction = {
+      "admin-save-event": "events", "admin-delete-event": "events", "admin-generate-schedule": "schedule", "admin-save-match": "schedule",
+      "admin-set-eoi": "eoi", "admin-set-payment": "money", "admin-set-hours": "money", "admin-delete-score": "scores", "admin-create-tournament": "tournaments",
+      "admin-generate-tournament-draw": "tournaments", "admin-save-tournament-match": "scores", "admin-create-announcement": "announcements", "admin-update-announcement": "announcements", "admin-delete-announcement": "announcements", "admin-set-role": "roles", "admin-revert-audit": "audit", "admin-delete-media": "media",
+    }[action];
+    if (permissionForAction && !hasAdminPermission(req, permissionForAction)) return audited(req, action, body, async () => reply({ error: "Your admin role does not have permission for this action." }, 403));
     if (action === "admin-change-passcode") return audited(req, action, body, () => changePasscode(body));
     if (action === "admin-save-event") return audited(req, action, body, () => saveEvent(body));
     if (action === "admin-generate-schedule") return audited(req, action, body, async () => reply(await generateEventSchedule(body.eventId)));

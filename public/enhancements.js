@@ -212,6 +212,17 @@
     renderAdminRoles();
   }
 
+  function renderAdminRoleLogin() {
+    const lock = $("adminLock");
+    if (!lock || adminToken() || lock.querySelector("#kbcRoleLogin")) return;
+    const box = document.createElement("div");
+    box.id = "kbcRoleLogin";
+    box.className = "kbc-enhancement";
+    box.innerHTML = `<article class="card" style="margin-top:16px;padding:18px;text-align:left"><p class="eyebrow">ROLE LOGIN</p><h3>Admin team access</h3><p class="kbc-muted">Owners can assign a role from Settings. Role holders sign in with their player PIN.</p><div class="formgrid" style="margin-top:10px"><label><span class="label">PLAYER</span><select class="control" id="kbcAdminPlayer"><option value="">Choose player</option>${(state().players || []).filter((player) => player.active).map((player) => `<option value="${player.id}">${esc(player.name)}</option>`).join("")}</select></label><label><span class="label">PLAYER PIN</span><input class="control" id="kbcAdminPlayerPin" inputmode="numeric" type="password" maxlength="6" placeholder="4 or 6 digits"></label></div><button class="secondary" id="kbcRoleLoginButton" style="margin-top:12px">Sign in with role</button></article>`;
+    lock.appendChild(box);
+    $("kbcRoleLoginButton").onclick = async () => { const body = { playerId: $("kbcAdminPlayer").value, playerPin: $("kbcAdminPlayerPin").value }; if (!body.playerId || !body.playerPin) return notify("Choose your player and enter your PIN"); try { const response = await fetch(`${API}?action=admin-login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(async (result) => { const json = await result.json(); if (!result.ok) throw new Error(json.error || "Admin login failed"); return json; }); sessionStorage.setItem("kbc-admin-token", response.token); location.reload(); } catch (error) { notify(error.message); } };
+  }
+
   async function renderAdminRoles() {
     const target = $("kbcRoles");
     if (!target || !adminToken()) return;
@@ -244,6 +255,7 @@
     renderStats();
     renderTournamentWorkflow();
     renderAdminEnhancements();
+    renderAdminRoleLogin();
     renderAuditEnhancements();
     setupRealtime();
     flushQueue();
