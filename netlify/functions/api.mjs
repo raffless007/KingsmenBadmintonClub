@@ -661,7 +661,7 @@ async function savePasscode(passcode) {
 async function appState() {
   await ensureUpcomingEvents();
   await maintainThursdaySessions();
-  const [players, events, eois, payments, scores, mediaRows, locations, locationCourtRates] = await Promise.all([
+  const [players, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments] = await Promise.all([
     db("players?select=id,name,active&order=name.asc"),
     db("events?select=*&order=event_date.asc"),
     db("eois?select=event_id,player_id,status,locked_in,locked_at,penalty_amount,updated_at"),
@@ -670,6 +670,7 @@ async function appState() {
     db("media_items?select=*&order=captured_at.desc,created_at.desc"),
     db("locations?select=id,name,suburb,timezone,active&active=eq.true&order=name.asc"),
     db("location_court_rates?select=location_id,day_type,start_minute,end_minute,hourly_rate&order=location_id,day_type,start_minute"),
+    db("tournaments?select=*&order=tournament_date.asc,created_at.desc"),
   ]);
   const playerHours = await db("event_player_hours?select=event_id,player_id,hours_played,updated_at");
   const media = mediaRows.map(item => ({ ...item, public_url: publicMediaUrl(item.storage_path) }));
@@ -678,7 +679,7 @@ async function appState() {
     const value = rows?.[0]?.value;
     try { return [event.id, value ? JSON.parse(value) : null]; } catch { return [event.id, null]; }
   })));
-  return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, serverNow: new Date().toISOString() };
+  return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, tournaments, serverNow: new Date().toISOString() };
 }
 
 async function adminState() {
@@ -1342,6 +1343,69 @@ async function updatePlayer(body) {
   return reply({ ok: true });
 }
 
+function optionalIsoDate(value, label) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`${label} is not valid.`);
+  return parsed.toISOString();
+}
+
+async function createTournament(body) {
+  const name = String(body.name || "").trim();
+  const tournamentDate = String(body.tournamentDate || "").trim();
+  const location = String(body.location || "").trim();
+  if (name.length < 3 || name.length > 140) return reply({ error: "Enter a tournament name between 3 and 140 characters." }, 400);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tournamentDate)) return reply({ error: "Choose a tournament date." }, 400);
+  if (!location || location.length > 140) return reply({ error: "Enter a tournament location." }, 400);
+  const discipline = ["Singles", "Doubles", "Mixed doubles", "Singles and doubles"].includes(body.discipline) ? body.discipline : "Doubles";
+  const competitionFormat = ["Round robin", "Knockout", "Groups and knockout", "Swiss system"].includes(body.competitionFormat) ? body.competitionFormat : "Round robin";
+  const status = ["draft", "registration_open", "registration_closed", "in_progress", "completed", "cancelled"].includes(body.status) ? body.status : "draft";
+  const number = (value, fallback, minimum, maximum) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(maximum, Math.max(minimum, parsed));
+  };
+  const tournament = {
+    name,
+    description: String(body.description || "").trim().slice(0, 2000) || null,
+    status,
+    tournament_type: String(body.tournamentType || "Club tournament").trim().slice(0, 80) || "Club tournament",
+    discipline,
+    competition_format: competitionFormat,
+    tournament_date: tournamentDate,
+    start_time: body.startTime || null,
+    end_time: body.endTime || null,
+    timezone: SYDNEY,
+    location_id: String(body.locationId || "").trim() || null,
+    location,
+    suburb: String(body.suburb || "").trim().slice(0, 100) || null,
+    registration_open_at: optionalIsoDate(body.registrationOpenAt, "Registration open time"),
+    registration_close_at: optionalIsoDate(body.registrationCloseAt, "Registration close time"),
+    payment_due_at: optionalIsoDate(body.paymentDueAt, "Payment due time"),
+    max_entries: body.maxEntries ? number(body.maxEntries, null, 1, 1000) : null,
+    court_count: number(body.courtCount, 2, 1, 20),
+    match_minutes: number(body.matchMinutes, 12, 1, 180),
+    changeover_minutes: number(body.changeoverMinutes, 1, 0, 30),
+    point_cap: number(body.pointCap, 21, 1, 30),
+    point_differential: number(body.pointDifferential, 2, 0, 10),
+    best_of: [1, 3].includes(Number(body.bestOf)) ? Number(body.bestOf) : 1,
+    entry_fee: number(body.entryFee, 0, 0, 100000),
+    shuttle_fee_included: Boolean(body.shuttleFeeIncluded),
+    organiser_name: String(body.organiserName || "").trim().slice(0, 120) || null,
+    organiser_contact: String(body.organiserContact || "").trim().slice(0, 160) || null,
+    prize_details: String(body.prizeDetails || "").trim().slice(0, 2000) || null,
+    rules: String(body.rules || "").trim().slice(0, 5000) || null,
+    notes: String(body.notes || "").trim().slice(0, 3000) || null,
+    updated_at: new Date().toISOString(),
+  };
+  const rows = await db("tournaments", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(tournament),
+  });
+  return reply({ ok: true, tournament: rows?.[0] || null });
+}
+
 export default async (req) => {
   try {
     requireConfiguration();
@@ -1365,7 +1429,7 @@ export default async (req) => {
       return reply(await adminState());
     }
 
-    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media"].includes(action)) {
+    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
@@ -1382,6 +1446,7 @@ export default async (req) => {
     if (action === "admin-set-hours") return adminSetPlayerHours(body);
     if (action === "admin-delete-score") return adminDeleteScore(body);
     if (action === "admin-delete-media") return adminDeleteMedia(body);
+    if (action === "admin-create-tournament") return createTournament(body);
   } catch (error) {
     console.error(error);
     if (error.message === "Server environment variables are not configured.") {
