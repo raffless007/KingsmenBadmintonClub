@@ -137,6 +137,74 @@ async function db(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+function auditActor(req, action, body) {
+  if (isAdmin(req)) return { type: "admin", id: null };
+  const playerId = body.playerId || body.submittedBy || (action === "player-pin" ? body.playerId : null);
+  return playerId ? { type: "player", id: String(playerId) } : { type: "anonymous", id: null };
+}
+
+function auditTarget(action, body) {
+  if (body.eventId) return { type: "event", id: String(body.eventId) };
+  if (body.scoreId) return { type: "match_score", id: String(body.scoreId) };
+  if (body.playerId) return { type: "player", id: String(body.playerId) };
+  if (body.tournamentId) return { type: "tournament", id: String(body.tournamentId) };
+  if (body.mediaId) return { type: "media", id: String(body.mediaId) };
+  return { type: action, id: null };
+}
+
+function auditDetails(body) {
+  const details = {};
+  const scalarKeys = [
+    "eventId", "playerId", "submittedBy", "scoreId", "tournamentId", "mediaId",
+    "status", "paid", "hoursPlayed", "shuttleFee", "targetPoints", "bestOf",
+    "courtName", "scheduledStart", "scheduledEnd", "mode", "fileName",
+  ];
+  for (const key of scalarKeys) {
+    if (body[key] !== undefined && body[key] !== null && body[key] !== "") details[key] = body[key];
+  }
+  if (typeof body.name === "string" && body.name.trim()) details.name = body.name.trim().slice(0, 120);
+  if (Array.isArray(body.matches)) details.matchCount = body.matches.length;
+  if (Array.isArray(body.pairings)) details.pairingCount = body.pairings.length;
+  if (body.changes && typeof body.changes === "object") details.changedFields = Object.keys(body.changes).slice(0, 40);
+  if (body.currentPasscode !== undefined || body.newPasscode !== undefined) details.passcodeChanged = true;
+  if (body.pin !== undefined) details.pinProvided = true;
+  return details;
+}
+
+async function writeAuditLog({ req, action, body, response, failed = false }) {
+  const actor = auditActor(req, action, body);
+  const target = auditTarget(action, body);
+  try {
+    await db("audit_logs", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        actor_type: actor.type,
+        actor_id: actor.id,
+        action,
+        target_type: target.type,
+        target_id: target.id,
+        status_code: response?.status || 500,
+        succeeded: !failed && (response?.status || 500) < 400,
+        details: auditDetails(body),
+      }),
+    });
+  } catch (error) {
+    console.error("Audit log write failed", error);
+  }
+}
+
+async function audited(req, action, body, handler) {
+  try {
+    const response = await handler();
+    await writeAuditLog({ req, action, body, response });
+    return response;
+  } catch (error) {
+    await writeAuditLog({ req, action, body, failed: true });
+    throw error;
+  }
+}
+
 function datePartsInSydney(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-AU", {
     timeZone: SYDNEY,
@@ -704,6 +772,11 @@ async function appState() {
 async function adminState() {
   const rows = await db("players?select=id,name,active,pin_hash&order=name.asc");
   return { players: rows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) })) };
+}
+
+async function adminAuditLog() {
+  const logs = await db("audit_logs?select=id,created_at,actor_type,actor_id,action,target_type,target_id,status_code,succeeded,details&order=created_at.desc&limit=200");
+  return { logs: Array.isArray(logs) ? logs : [] };
 }
 
 async function submitEoi(body) {
@@ -1478,44 +1551,52 @@ export default async (req) => {
       "save-pairing": body.playerId,
     }[action];
     if (req.method === "POST" && playerIdForAction && !isPlayer(req, playerIdForAction)) {
-      return reply({ error: "Player PIN required. Please sign in again." }, 401);
+      return audited(req, action, body, async () => reply({ error: "Player PIN required. Please sign in again." }, 401));
     }
-    if (req.method === "POST" && action === "eoi") return submitEoi(body);
-    if (req.method === "POST" && action === "paid") return markPaid(body);
-    if (req.method === "POST" && action === "shuttle-fee") return updateShuttleFee(body);
-    if (req.method === "POST" && action === "score") return submitScore(body);
-    if (req.method === "POST" && action === "live-score-new") return createLiveMatch(body);
-    if (req.method === "POST" && action === "live-score") return liveScore(body);
-    if (req.method === "POST" && action === "media-upload-url") return createMediaUpload(body);
-    if (req.method === "POST" && action === "media-finalize") return finalizeMediaUpload(body);
-    if (req.method === "POST" && action === "admin-login") return adminLogin(body);
-    if (req.method === "POST" && action === "add-player") return addPlayer(body);
-    if (req.method === "POST" && action === "player-pin") return playerPin(body);
-    if (req.method === "POST" && action === "save-pairing") return savePairing(body);
+    if (req.method === "POST" && action === "eoi") return audited(req, action, body, () => submitEoi(body));
+    if (req.method === "POST" && action === "paid") return audited(req, action, body, () => markPaid(body));
+    if (req.method === "POST" && action === "shuttle-fee") return audited(req, action, body, () => updateShuttleFee(body));
+    if (req.method === "POST" && action === "score") return audited(req, action, body, () => submitScore(body));
+    if (req.method === "POST" && action === "live-score-new") return audited(req, action, body, () => createLiveMatch(body));
+    if (req.method === "POST" && action === "live-score") return audited(req, action, body, () => liveScore(body));
+    if (req.method === "POST" && action === "media-upload-url") return audited(req, action, body, () => createMediaUpload(body));
+    if (req.method === "POST" && action === "media-finalize") return audited(req, action, body, () => finalizeMediaUpload(body));
+    if (req.method === "POST" && action === "admin-login") return audited(req, action, body, () => adminLogin(body));
+    if (req.method === "POST" && action === "add-player") return audited(req, action, body, () => addPlayer(body));
+    if (req.method === "POST" && action === "player-pin") return audited(req, action, body, () => playerPin(body));
+    if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body));
     if (req.method === "GET" && action === "admin-state") {
-      if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
-      return reply(await adminState());
+      return audited(req, action, body, async () => {
+        if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
+        return reply(await adminState());
+      });
+    }
+    if (req.method === "GET" && action === "admin-audit-log") {
+      return audited(req, action, body, async () => {
+        if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
+        return reply(await adminAuditLog());
+      });
     }
 
     if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
-    if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
-    if (action === "admin-change-passcode") return changePasscode(body);
-    if (action === "admin-save-event") return saveEvent(body);
-    if (action === "admin-generate-schedule") return reply(await generateEventSchedule(body.eventId));
-    if (action === "admin-save-match") return adminSaveMatch(body);
-    if (action === "admin-delete-event") return deleteEvent(body);
-    if (action === "admin-add-player") return addPlayer(body);
-    if (action === "admin-update-player") return updatePlayer(body);
-    if (action === "admin-remove-player") return removePlayer(body);
-    if (action === "admin-reset-player-pin") return resetPlayerPin(body);
-    if (action === "admin-set-eoi") return adminSetEoi(body);
-    if (action === "admin-set-payment") return adminSetPayment(body);
-    if (action === "admin-set-hours") return adminSetPlayerHours(body);
-    if (action === "admin-delete-score") return adminDeleteScore(body);
-    if (action === "admin-delete-media") return adminDeleteMedia(body);
-    if (action === "admin-create-tournament") return createTournament(body);
+    if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));
+    if (action === "admin-change-passcode") return audited(req, action, body, () => changePasscode(body));
+    if (action === "admin-save-event") return audited(req, action, body, () => saveEvent(body));
+    if (action === "admin-generate-schedule") return audited(req, action, body, async () => reply(await generateEventSchedule(body.eventId)));
+    if (action === "admin-save-match") return audited(req, action, body, () => adminSaveMatch(body));
+    if (action === "admin-delete-event") return audited(req, action, body, () => deleteEvent(body));
+    if (action === "admin-add-player") return audited(req, action, body, () => addPlayer(body));
+    if (action === "admin-update-player") return audited(req, action, body, () => updatePlayer(body));
+    if (action === "admin-remove-player") return audited(req, action, body, () => removePlayer(body));
+    if (action === "admin-reset-player-pin") return audited(req, action, body, () => resetPlayerPin(body));
+    if (action === "admin-set-eoi") return audited(req, action, body, () => adminSetEoi(body));
+    if (action === "admin-set-payment") return audited(req, action, body, () => adminSetPayment(body));
+    if (action === "admin-set-hours") return audited(req, action, body, () => adminSetPlayerHours(body));
+    if (action === "admin-delete-score") return audited(req, action, body, () => adminDeleteScore(body));
+    if (action === "admin-delete-media") return audited(req, action, body, () => adminDeleteMedia(body));
+    if (action === "admin-create-tournament") return audited(req, action, body, () => createTournament(body));
   } catch (error) {
     console.error(error);
     if (error.message === "Server environment variables are not configured.") {

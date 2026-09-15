@@ -181,6 +181,19 @@ create table if not exists public.app_settings (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  actor_type text not null check (actor_type in ('admin', 'player', 'anonymous')),
+  actor_id uuid references public.players(id) on delete set null,
+  action text not null,
+  target_type text,
+  target_id text,
+  status_code smallint,
+  succeeded boolean not null default true,
+  details jsonb not null default '{}'::jsonb
+);
+
 create table if not exists public.reminder_log (
   id uuid primary key default gen_random_uuid(),
   event_id uuid not null references public.events(id) on delete cascade,
@@ -199,6 +212,7 @@ alter table public.event_player_hours enable row level security;
 alter table public.match_scores enable row level security;
 alter table public.media_items enable row level security;
 alter table public.app_settings enable row level security;
+alter table public.audit_logs enable row level security;
 alter table public.reminder_log enable row level security;
 alter table public.locations enable row level security;
 alter table public.location_court_rates enable row level security;
@@ -211,6 +225,12 @@ create index if not exists eois_event_status_idx
 
 create index if not exists media_items_captured_created_idx
   on public.media_items (captured_at desc, created_at desc);
+
+create index if not exists audit_logs_created_idx
+  on public.audit_logs (created_at desc);
+
+create index if not exists audit_logs_actor_idx
+  on public.audit_logs (actor_id, created_at desc);
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('kingsmen-media', 'kingsmen-media', true, 209715200, array['image/*','video/*'])
