@@ -180,6 +180,8 @@ function auditDetails(body) {
     if (body[key] !== undefined && body[key] !== null && body[key] !== "") details[key] = body[key];
   }
   if (typeof body.name === "string" && body.name.trim()) details.name = body.name.trim().slice(0, 120);
+  if (typeof body.description === "string" && body.description.trim()) details.description = body.description.trim().slice(0, 240);
+  if (Array.isArray(body.permissions)) details.permissions = body.permissions.slice(0, 20);
   if (Array.isArray(body.matches)) details.matchCount = body.matches.length;
   if (Array.isArray(body.pairings)) details.pairingCount = body.pairings.length;
   if (body.changes && typeof body.changes === "object") details.changedFields = Object.keys(body.changes).slice(0, 40);
@@ -805,9 +807,20 @@ const ADMIN_PERMISSIONS = {
   media: new Set(["media", "audit"]),
 };
 
-function hasAdminPermission(req, permission) {
+const ALL_ADMIN_PERMISSIONS = new Set(["events", "schedule", "eoi", "money", "scores", "roster", "media", "tournaments", "announcements", "roles", "audit"]);
+
+async function adminPermissionSet(role) {
+  if (ADMIN_PERMISSIONS[role]) return ADMIN_PERMISSIONS[role];
+  if (!role) return new Set();
+  const rows = await db(`admin_role_definitions?slug=eq.${encodeURIComponent(role)}&active=eq.true&select=permissions`);
+  const permissions = rows?.[0]?.permissions;
+  return new Set(Array.isArray(permissions) ? permissions.filter(permission => ALL_ADMIN_PERMISSIONS.has(permission)) : []);
+}
+
+async function hasAdminPermission(req, permission) {
   const role = adminRole(req);
-  return Boolean(role && ADMIN_PERMISSIONS[role]?.has(permission));
+  const permissions = await adminPermissionSet(role);
+  return permissions.has(permission);
 }
 
 async function getEvent(eventId) {
@@ -858,10 +871,12 @@ async function appState() {
   return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements, tournamentEntries, tournamentMatches, serverNow: new Date().toISOString() };
 }
 
-async function adminState() {
+async function adminState(req) {
   const rows = await db("players?select=id,name,active,pin_hash&order=name.asc");
   const roles = await db("admin_roles?select=*&order=role,player_id");
-  return { players: rows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) })), roles: roles || [] };
+  const roleDefinitions = await db("admin_role_definitions?select=*&order=is_system.desc,name.asc");
+  const currentRole = adminRole(req);
+  return { players: rows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) })), roles: roles || [], roleDefinitions: roleDefinitions || [], currentRole, permissions: [...await adminPermissionSet(currentRole)], canManageRoles: currentRole === "owner" };
 }
 
 async function adminAuditLog() {
@@ -900,11 +915,66 @@ async function promoteWaitlist(eventId) {
   return promoted;
 }
 
+function cleanRolePermissions(value) {
+  return [...new Set((Array.isArray(value) ? value : []).filter(permission => ALL_ADMIN_PERMISSIONS.has(permission)))];
+}
+
+async function getRoleDefinition(slug) {
+  const rows = await db(`admin_role_definitions?slug=eq.${encodeURIComponent(String(slug || ""))}&select=*`);
+  return rows?.[0] || null;
+}
+
 async function setAdminRole(body) {
-  if (!body.playerId || !["owner", "admin", "treasurer", "scheduler", "scorekeeper", "media"].includes(body.role)) return reply({ error: "Choose a player and valid role." }, 400);
+  if (!body.playerId || !body.role) return reply({ error: "Choose a player and valid role." }, 400);
+  const definition = await getRoleDefinition(body.role);
+  if (!definition || !definition.active) return reply({ error: "That admin role is no longer active." }, 400);
   await db("admin_roles?on_conflict=player_id", {
     method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
     body: JSON.stringify({ player_id: body.playerId, role: body.role, active: body.active !== false, updated_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true });
+}
+
+async function createAdminRole(body) {
+  const name = String(body.name || "").trim();
+  if (name.length < 2 || name.length > 60) return reply({ error: "Role name must be between 2 and 60 characters." }, 400);
+  const permissions = cleanRolePermissions(body.permissions);
+  if (!permissions.length) return reply({ error: "Choose at least one app function for this role." }, 400);
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "custom-role";
+  const slug = `custom-${base}-${randomBytes(3).toString("hex")}`;
+  const rows = await db("admin_role_definitions", {
+    method: "POST", headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ slug, name, description: String(body.description || "").trim().slice(0, 240) || null, permissions, is_system: false, active: true, updated_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true, role: rows?.[0] || null });
+}
+
+async function updateAdminRole(body) {
+  const role = await getRoleDefinition(body.slug);
+  if (!role) return reply({ error: "Admin role not found." }, 404);
+  if (role.is_system) return reply({ error: "Default roles cannot be edited." }, 409);
+  const name = String(body.name || "").trim();
+  const permissions = cleanRolePermissions(body.permissions);
+  if (name.length < 2 || name.length > 60) return reply({ error: "Role name must be between 2 and 60 characters." }, 400);
+  if (!permissions.length) return reply({ error: "Choose at least one app function for this role." }, 400);
+  await db(`admin_role_definitions?slug=eq.${encodeURIComponent(role.slug)}`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ name, description: String(body.description || "").trim().slice(0, 240) || null, permissions, updated_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true });
+}
+
+async function deleteAdminRole(body) {
+  const role = await getRoleDefinition(body.slug);
+  if (!role) return reply({ error: "Admin role not found." }, 404);
+  if (role.is_system) return reply({ error: "Default roles cannot be removed." }, 409);
+  await db(`admin_role_definitions?slug=eq.${encodeURIComponent(role.slug)}`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ active: false, updated_at: new Date().toISOString() }),
+  });
+  await db(`admin_roles?role=eq.${encodeURIComponent(role.slug)}`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ active: false, updated_at: new Date().toISOString() }),
   });
   return reply({ ok: true });
 }
@@ -1253,8 +1323,11 @@ async function adminLogin(body) {
   if (body.playerId && body.playerPin) {
     const players = await db(`players?id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=id,name,pin_hash`);
     const roles = await db(`admin_roles?player_id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=role`);
-    if (!players?.[0]?.pin_hash || !verifyPasscode(String(body.playerPin), players[0].pin_hash) || !roles?.[0]) return reply({ error: "Admin player PIN or role is incorrect." }, 401);
-    return reply({ ok: true, role: roles[0].role, token: signSession(roles[0].role) });
+    const role = roles?.[0]?.role;
+    const roleDefinition = await getRoleDefinition(role);
+    const validRole = role === "owner" || Boolean(roleDefinition?.active);
+    if (!players?.[0]?.pin_hash || !verifyPasscode(String(body.playerPin), players[0].pin_hash) || !role || !validRole) return reply({ error: "Admin player PIN or role is incorrect." }, 401);
+    return reply({ ok: true, role, token: signSession(role) });
   }
   if (!/^\d{4,8}$/.test(body.passcode || "")) return reply({ error: "Invalid passcode." }, 401);
   let stored = await getPasscodeSetting();
@@ -1914,7 +1987,7 @@ export default async (req) => {
     if (req.method === "GET" && action === "admin-state") {
       return audited(req, action, body, async () => {
         if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
-        return reply(await adminState());
+        return reply(await adminState(req));
       });
     }
     if (req.method === "GET" && action === "admin-audit-log") {
@@ -1924,16 +1997,19 @@ export default async (req) => {
       });
     }
 
-    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
+    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));
+    if (["admin-change-passcode", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role"].includes(action) && adminRole(req) !== "owner") {
+      return audited(req, action, body, async () => reply({ error: "Only the owner can manage admin access." }, 403));
+    }
     const permissionForAction = {
       "admin-save-event": "events", "admin-delete-event": "events", "admin-generate-schedule": "schedule", "admin-save-match": "schedule",
       "admin-set-eoi": "eoi", "admin-set-payment": "money", "admin-set-hours": "money", "admin-delete-score": "scores", "admin-create-tournament": "tournaments",
-      "admin-generate-tournament-draw": "tournaments", "admin-save-tournament-match": "scores", "admin-create-announcement": "announcements", "admin-update-announcement": "announcements", "admin-delete-announcement": "announcements", "admin-set-role": "roles", "admin-revert-audit": "audit", "admin-delete-media": "media",
+      "admin-generate-tournament-draw": "tournaments", "admin-save-tournament-match": "scores", "admin-create-announcement": "announcements", "admin-update-announcement": "announcements", "admin-delete-announcement": "announcements", "admin-set-role": "roles", "admin-create-role": "roles", "admin-update-role": "roles", "admin-delete-role": "roles", "admin-revert-audit": "audit", "admin-delete-media": "media",
     }[action];
-    if (permissionForAction && !hasAdminPermission(req, permissionForAction)) return audited(req, action, body, async () => reply({ error: "Your admin role does not have permission for this action." }, 403));
+    if (permissionForAction && !await hasAdminPermission(req, permissionForAction)) return audited(req, action, body, async () => reply({ error: "Your admin role does not have permission for this action." }, 403));
     if (action === "admin-change-passcode") return audited(req, action, body, () => changePasscode(body));
     if (action === "admin-save-event") return audited(req, action, body, () => saveEvent(body));
     if (action === "admin-generate-schedule") return audited(req, action, body, async () => reply(await generateEventSchedule(body.eventId)));
@@ -1950,6 +2026,9 @@ export default async (req) => {
     if (action === "admin-delete-media") return audited(req, action, body, () => adminDeleteMedia(body));
     if (action === "admin-create-tournament") return audited(req, action, body, () => createTournament(body));
     if (action === "admin-set-role") return audited(req, action, body, () => setAdminRole(body));
+    if (action === "admin-create-role") return audited(req, action, body, () => createAdminRole(body));
+    if (action === "admin-update-role") return audited(req, action, body, () => updateAdminRole(body));
+    if (action === "admin-delete-role") return audited(req, action, body, () => deleteAdminRole(body));
     if (action === "admin-revert-audit") return audited(req, action, body, () => revertAudit(body));
     if (action === "admin-create-announcement") return audited(req, action, body, () => createAnnouncement(body));
     if (action === "admin-update-announcement") return audited(req, action, body, () => updateAnnouncement(body));
