@@ -19,23 +19,46 @@ create table if not exists public.events (
   timezone text not null default 'Australia/Sydney',
   location text not null default 'Sydney Sports Club',
   suburb text not null default 'Kings Park',
+  location_id text,
   court_1_name text not null default 'Court 1',
   court_fee numeric(10,2) not null default 69.00,
+  court_fee_manual boolean not null default false,
   court_2_enabled boolean not null default true,
   court_2_name text not null default 'Court 2',
   court_2_start_time time not null default '21:00',
   court_2_end_time time not null default '23:00',
   court_2_fee numeric(10,2) not null default 69.00,
+  court_2_fee_manual boolean not null default false,
   court_3_enabled boolean not null default false,
   court_3_name text not null default 'Court 3',
   court_3_start_time time not null default '22:00',
   court_3_end_time time not null default '23:00',
   court_3_fee numeric(10,2) not null default 69.00,
+  court_3_fee_manual boolean not null default false,
   shuttle_fee numeric(10,2) not null default 0.00,
   account_closed boolean not null default false,
   schedule_generated_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table if not exists public.locations (
+  id text primary key,
+  name text not null,
+  suburb text not null,
+  timezone text not null default 'Australia/Sydney',
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.location_court_rates (
+  location_id text not null references public.locations(id) on delete cascade,
+  day_type text not null check (day_type in ('weekday', 'weekend')),
+  start_minute smallint not null check (start_minute between 0 and 1439),
+  end_minute smallint not null check (end_minute between 1 and 1440),
+  hourly_rate numeric(10,2) not null check (hourly_rate >= 0),
+  primary key (location_id, day_type, start_minute),
+  check (end_minute > start_minute)
 );
 
 create table if not exists public.eois (
@@ -139,6 +162,8 @@ alter table public.match_scores enable row level security;
 alter table public.media_items enable row level security;
 alter table public.app_settings enable row level security;
 alter table public.reminder_log enable row level security;
+alter table public.locations enable row level security;
+alter table public.location_court_rates enable row level security;
 
 create index if not exists match_scores_event_created_idx
   on public.match_scores (event_id, created_at);
@@ -186,3 +211,20 @@ on conflict (name) do nothing;
 insert into public.app_settings (key, value)
 values ('admin_passcode_hash', null)
 on conflict (key) do nothing;
+
+insert into public.locations (id, name, suburb, timezone)
+values ('sydney-sports-club-kings-park', 'Sydney Sports Club', 'Kings Park', 'Australia/Sydney')
+on conflict (id) do nothing;
+
+insert into public.location_court_rates (location_id, day_type, start_minute, end_minute, hourly_rate)
+values
+  ('sydney-sports-club-kings-park', 'weekday', 300, 960, 23.00),
+  ('sydney-sports-club-kings-park', 'weekday', 960, 1080, 32.00),
+  ('sydney-sports-club-kings-park', 'weekday', 1080, 1320, 41.00),
+  ('sydney-sports-club-kings-park', 'weekday', 1320, 1440, 28.00),
+  ('sydney-sports-club-kings-park', 'weekend', 300, 420, 30.00),
+  ('sydney-sports-club-kings-park', 'weekend', 420, 720, 41.00),
+  ('sydney-sports-club-kings-park', 'weekend', 720, 1260, 32.00),
+  ('sydney-sports-club-kings-park', 'weekend', 1260, 1320, 30.00),
+  ('sydney-sports-club-kings-park', 'weekend', 1320, 1440, 26.00)
+on conflict (location_id, day_type, start_minute) do nothing;
