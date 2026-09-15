@@ -331,6 +331,76 @@ async function lockDueThursdayEois(event) {
   })));
 }
 
+function pairingKey(players) {
+  return [...players].sort().join(":");
+}
+
+function derivePairingsFromScores(scores, count) {
+  const pairings = [];
+  const seen = new Set();
+  for (const row of [...scores].sort((a, b) => (a.match_number || 9999) - (b.match_number || 9999))) {
+    for (const pair of [row.team_a_player_ids, row.team_b_player_ids]) {
+      if (!Array.isArray(pair) || pair.length !== 2) continue;
+      const key = pairingKey(pair);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairings.push([...pair]);
+      if (pairings.length >= Math.ceil(count / 2)) return pairings;
+    }
+  }
+  return pairings;
+}
+
+async function getEventPairings(eventId, players, scores = []) {
+  const key = `pairings:${eventId}`;
+  const rows = await db(`app_settings?key=eq.${encodeURIComponent(key)}&select=value`);
+  const saved = rows?.[0]?.value ? JSON.parse(rows[0].value) : null;
+  const attending = new Set(players.map(player => player.id));
+  if (Array.isArray(saved) && saved.length && saved.every(pair => Array.isArray(pair) && pair.length === 2 && new Set(pair).size === 2 && pair.every(id => attending.has(id)))) {
+    return saved;
+  }
+  const derived = derivePairingsFromScores(scores, players.length);
+  const fallback = derived.length === Math.ceil(players.length / 2)
+    ? derived
+    : players.reduce((result, player, index) => index % 2 ? result : [...result, players.slice(index, index + 2).map(item => item.id)], []);
+  return fallback;
+}
+
+async function saveEventPairings(eventId, pairings) {
+  await db("app_settings?on_conflict=key", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ key: `pairings:${eventId}`, value: JSON.stringify(pairings), updated_at: new Date().toISOString() }),
+  });
+}
+
+function chooseFixedPairing(pairings, used, stats, round) {
+  const available = pairings.filter(pair => pair.every(id => !used.has(id))).map(pair => pair.map(id => ({ id })));
+  if (available.length < 2) return null;
+  let best = null;
+  for (let i = 0; i < available.length - 1; i += 1) {
+    for (let j = i + 1; j < available.length; j += 1) {
+      const teamA = available[i];
+      const teamB = available[j];
+      const all = [...teamA, ...teamB];
+      let score = 0;
+      for (const player of all) {
+        const row = stats.get(player.id);
+        if (!row) continue;
+        const gap = row.lastPlayed < 0 ? round + 1 : round - row.lastPlayed;
+        score += row.played * 14 - gap * 4;
+      }
+      for (const playerA of teamA) for (const playerB of teamB) {
+        score += (stats.get(playerA.id)?.opponents.get(playerB.id) || 0) * 7;
+      }
+      if (!best || score < best.score) best = { teamA, teamB, score };
+    }
+  }
+  if (!best) return null;
+  recordPairingStats(best, stats, round);
+  return best;
+}
+
 async function generateEventSchedule(eventId, { force = true } = {}) {
   const event = await getEvent(eventId);
   if (!event) throw new Error("Event not found.");
@@ -342,6 +412,8 @@ async function generateEventSchedule(eventId, { force = true } = {}) {
   if (players.length < 4) return { saved: 0, message: "At least four players must be marked In before generating a schedule." };
 
   const existing = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=*&order=match_number.asc`);
+  const fixedPairings = await getEventPairings(eventId, players, existing);
+  await saveEventPairings(eventId, fixedPairings);
   const protectedRows = existing.filter(row => row.status === "live" || row.pairing_manual || row.schedule_manual);
   const replaceable = existing.filter(row => row.status !== "completed" && !protectedRows.some(item => item.id === row.id));
   await Promise.all(replaceable.map(row => db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } })));
@@ -365,7 +437,7 @@ async function generateEventSchedule(eventId, { force = true } = {}) {
         for (const playerId of [...(protectedRow.team_a_player_ids || []), ...(protectedRow.team_b_player_ids || [])]) used.add(playerId);
         continue;
       }
-      const pairing = choosePairing(players, used, stats, round);
+      const pairing = chooseFixedPairing(fixedPairings, used, stats, round) || choosePairing(players, used, stats, round);
       if (!pairing) continue;
       [...pairing.teamA, ...pairing.teamB].forEach(player => used.add(player.id));
       rows.push({
@@ -502,7 +574,12 @@ async function appState() {
   ]);
   const playerHours = await db("event_player_hours?select=event_id,player_id,hours_played,updated_at");
   const media = mediaRows.map(item => ({ ...item, public_url: publicMediaUrl(item.storage_path) }));
-  return { players, events, eois, payments, scores, media, playerHours, serverNow: new Date().toISOString() };
+  const eventPairings = Object.fromEntries(await Promise.all(events.map(async event => {
+    const rows = await db(`app_settings?key=eq.${encodeURIComponent(`pairings:${event.id}`)}&select=value`);
+    const value = rows?.[0]?.value;
+    try { return [event.id, value ? JSON.parse(value) : null]; } catch { return [event.id, null]; }
+  })));
+  return { players, events, eois, payments, scores, media, playerHours, eventPairings, serverNow: new Date().toISOString() };
 }
 
 async function adminState() {
@@ -900,6 +977,13 @@ async function savePairing(body) {
   if (newPlayers.some(id => !attending.has(id))) return reply({ error: "Choose players marked In for this session." }, 400);
   const samePair = (left, right) => Array.isArray(left) && left.length === 2 && [...left].sort().join(":") === [...right].sort().join(":");
   const scores = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=*`);
+  const pairings = await getEventPairings(eventId, [...attending].map(id => ({ id })), scores);
+  const pairingIndex = pairings.findIndex(pair => samePair(pair, oldPlayers));
+  if (pairingIndex < 0) return reply({ error: "That pairing is not available in the editable schedule." }, 404);
+  if (pairings.some((pair, index) => index !== pairingIndex && pair.some(id => newPlayers.includes(id)))) {
+    return reply({ error: "Each attendee can only appear in one pairing." }, 400);
+  }
+  pairings[pairingIndex] = newPlayers;
   const matches = (scores || []).filter(row => (row.status || "scheduled") === "scheduled");
   const updates = [];
   for (const row of matches) {
@@ -913,6 +997,7 @@ async function savePairing(body) {
     updates.push({ row, patch });
   }
   if (!updates.length) return reply({ error: "That pairing is not available in the editable schedule." }, 404);
+  await saveEventPairings(eventId, pairings);
   for (const update of updates) {
     const { row, patch } = update;
     await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, {
