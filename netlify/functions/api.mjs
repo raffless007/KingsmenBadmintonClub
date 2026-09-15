@@ -566,6 +566,56 @@ function liveSnapshot(row) {
   };
 }
 
+async function createLiveMatch(body) {
+  const event = await getEvent(body.eventId);
+  if (!event || !body.playerId) return reply({ error: "Event or player not found." }, 404);
+  if (new Date() < localDateTimeToUtc(event.event_date, eventStartTime(event), event.timezone)) {
+    return reply({ error: "Live scoring opens when the session starts." }, 409);
+  }
+  const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&select=player_id`);
+  const attending = new Set(attendingRows.map(row => row.player_id));
+  if (!attending.has(body.playerId)) return reply({ error: "Only players marked In for this session can score." }, 403);
+  const teamA = Array.isArray(body.teamA) ? body.teamA.filter(Boolean) : [];
+  const teamB = Array.isArray(body.teamB) ? body.teamB.filter(Boolean) : [];
+  const allPlayers = [...teamA, ...teamB];
+  if (teamA.length !== 2 || teamB.length !== 2 || new Set(allPlayers).size !== 4 || allPlayers.some(id => !attending.has(id))) {
+    return reply({ error: "Every doubles match requires four different players marked In." }, 400);
+  }
+  const target = [15, 21, 30].includes(Number(body.targetPoints)) ? Number(body.targetPoints) : 21;
+  const bestOf = Number(body.bestOf) === 3 ? 3 : 1;
+  const serverId = allPlayers.includes(body.serverPlayerId) ? body.serverPlayerId : null;
+  const serverTeam = serverId && teamA.includes(serverId) ? "A" : serverId && teamB.includes(serverId) ? "B" : null;
+  const rows = await db("match_scores", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      event_id: body.eventId,
+      match_number: null,
+      court_name: body.courtName ? String(body.courtName) : null,
+      scheduled_start: null,
+      scheduled_end: null,
+      team_a_player_ids: teamA,
+      team_b_player_ids: teamB,
+      games_a: 0,
+      games_b: 0,
+      target_points: target,
+      best_of: bestOf,
+      status: "live",
+      current_game: 1,
+      points_a: 0,
+      points_b: 0,
+      server_team: serverTeam,
+      server_player_id: serverId,
+      server_position: serverId ? (body.serverPosition === "left" ? "left" : "right") : null,
+      game_scores: [],
+      score_history: [],
+      started_at: new Date().toISOString(),
+      submitted_by: body.playerId,
+    }),
+  });
+  return reply({ ok: true, score: Array.isArray(rows) ? rows[0] : rows });
+}
+
 async function liveScore(body) {
   const rows = await db(`match_scores?id=eq.${encodeURIComponent(body.scoreId || "")}&select=*`);
   const row = rows?.[0];
@@ -918,6 +968,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "paid") return markPaid(body);
     if (req.method === "POST" && action === "shuttle-fee") return updateShuttleFee(body);
     if (req.method === "POST" && action === "score") return submitScore(body);
+    if (req.method === "POST" && action === "live-score-new") return createLiveMatch(body);
     if (req.method === "POST" && action === "live-score") return liveScore(body);
     if (req.method === "POST" && action === "media-upload-url") return createMediaUpload(body);
     if (req.method === "POST" && action === "media-finalize") return finalizeMediaUpload(body);
