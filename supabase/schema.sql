@@ -33,6 +33,7 @@ create table if not exists public.events (
   court_3_fee numeric(10,2) not null default 69.00,
   shuttle_fee numeric(10,2) not null default 0.00,
   account_closed boolean not null default false,
+  schedule_generated_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -41,6 +42,9 @@ create table if not exists public.eois (
   event_id uuid not null references public.events(id) on delete cascade,
   player_id uuid not null references public.players(id) on delete cascade,
   status text not null check (status in ('yes','no')),
+  locked_in boolean not null default false,
+  locked_at timestamptz,
+  penalty_amount numeric(10,2) not null default 0,
   updated_at timestamptz not null default now(),
   primary key (event_id, player_id)
 );
@@ -87,6 +91,8 @@ create table if not exists public.match_scores (
   server_position text check (server_position in ('left', 'right')),
   game_scores jsonb not null default '[]'::jsonb,
   score_history jsonb not null default '[]'::jsonb,
+  pairing_manual boolean not null default false,
+  schedule_manual boolean not null default false,
   started_at timestamptz,
   completed_at timestamptz,
   submitted_by uuid references public.players(id),
@@ -136,6 +142,9 @@ alter table public.reminder_log enable row level security;
 
 create index if not exists match_scores_event_created_idx
   on public.match_scores (event_id, created_at);
+
+create index if not exists eois_event_status_idx
+  on public.eois (event_id, status);
 
 create index if not exists media_items_captured_created_idx
   on public.media_items (captured_at desc, created_at desc);

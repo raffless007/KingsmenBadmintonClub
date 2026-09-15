@@ -42,6 +42,36 @@ function eventEndTime(event) {
     .at(-1);
 }
 
+function isThursdayEvent(event) {
+  return new Date(`${event.event_date}T12:00:00Z`).getUTCDay() === 4;
+}
+
+function eventCapacity(event) {
+  return event.court_3_enabled ? 14 : 12;
+}
+
+function shiftLocalDate(dateText, days) {
+  const date = new Date(`${dateText}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return dateString(date);
+}
+
+function thursdayLockAt(event) {
+  return localDateTimeToUtc(shiftLocalDate(event.event_date, -2), "20:00:00", event.timezone);
+}
+
+function thursdayLateEoiCloseAt(event) {
+  return localDateTimeToUtc(event.event_date, "12:00:00", event.timezone);
+}
+
+function thursdayScheduleAt(event) {
+  return localDateTimeToUtc(event.event_date, "12:01:00", event.timezone);
+}
+
+function oldEoiDeadline(event) {
+  return localDateTimeToUtc(event.event_date, eventStartTime(event), event.timezone).getTime() - 6 * 60 * 60 * 1000;
+}
+
 function totalCourtFee(event) {
   return Number(event.court_fee) + (event.court_2_enabled ? Number(event.court_2_fee || 0) : 0) + (event.court_3_enabled ? Number(event.court_3_fee || 0) : 0);
 }
@@ -222,6 +252,29 @@ function pairingCandidates(players) {
   return result;
 }
 
+function recordPairingStats(pairing, stats, round) {
+  const all = [...pairing.teamA, ...pairing.teamB];
+  for (const player of all) {
+    const row = stats.get(player.id);
+    if (!row) continue;
+    row.played += 1;
+    row.lastPlayed = round;
+  }
+  for (const team of [pairing.teamA, pairing.teamB]) {
+    const [a, b] = team;
+    if (!stats.has(a.id) || !stats.has(b.id)) continue;
+    stats.get(a.id).teammates.set(b.id, (stats.get(a.id).teammates.get(b.id) || 0) + 1);
+    stats.get(b.id).teammates.set(a.id, (stats.get(b.id).teammates.get(a.id) || 0) + 1);
+  }
+  for (const a of pairing.teamA) {
+    for (const b of pairing.teamB) {
+      if (!stats.has(a.id) || !stats.has(b.id)) continue;
+      stats.get(a.id).opponents.set(b.id, (stats.get(a.id).opponents.get(b.id) || 0) + 1);
+      stats.get(b.id).opponents.set(a.id, (stats.get(b.id).opponents.get(a.id) || 0) + 1);
+    }
+  }
+}
+
 function choosePairing(players, used, stats, round) {
   const available = players.filter(player => !used.has(player.id));
   if (available.length < 4) return null;
@@ -245,41 +298,11 @@ function choosePairing(players, used, stats, round) {
     if (!best || score < best.score) best = { ...candidate, score };
   }
   if (!best) return null;
-  const all = [...best.teamA, ...best.teamB];
-  for (const player of all) {
-    const row = stats.get(player.id);
-    row.played += 1;
-    row.lastPlayed = round;
-  }
-  for (const team of [best.teamA, best.teamB]) {
-    const [a, b] = team;
-    stats.get(a.id).teammates.set(b.id, (stats.get(a.id).teammates.get(b.id) || 0) + 1);
-    stats.get(b.id).teammates.set(a.id, (stats.get(b.id).teammates.get(a.id) || 0) + 1);
-  }
-  for (const a of best.teamA) {
-    for (const b of best.teamB) {
-      stats.get(a.id).opponents.set(b.id, (stats.get(a.id).opponents.get(b.id) || 0) + 1);
-      stats.get(b.id).opponents.set(a.id, (stats.get(b.id).opponents.get(a.id) || 0) + 1);
-    }
-  }
+  recordPairingStats(best, stats, round);
   return best;
 }
 
-async function generateEventSchedule(eventId) {
-  const event = await getEvent(eventId);
-  if (!event) throw new Error("Event not found.");
-  const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
-  const players = attendingRows.map(row => ({ id: row.player_id }));
-  if (players.length < 4) return { saved: 0, message: "At least four players must be marked In before generating a schedule." };
-
-  const existing = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=id,status,match_number&order=match_number.asc`);
-  const completed = existing.filter(row => row.status === "completed");
-  const nextNumber = completed.reduce((max, row) => Math.max(max, Number(row.match_number || 0)), 0);
-  const replaceable = existing.filter(row => row.status !== "completed");
-  if (replaceable.length) {
-    await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&status=in.(scheduled,live)`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-  }
-
+function scheduleSlots(event) {
   const baseStart = timeToMinutes(event.start_time) + 10;
   const end = timeToMinutes(eventEndTime(event));
   const courts = [
@@ -295,19 +318,59 @@ async function generateEventSchedule(eventId) {
       slots.set(start, list);
     }
   }
+  return [...slots.entries()].sort((a, b) => a[0] - b[0]);
+}
+
+async function lockDueThursdayEois(event) {
+  if (!isThursdayEvent(event) || new Date() < thursdayLockAt(event)) return;
+  const rows = await db(`eois?event_id=eq.${encodeURIComponent(event.id)}&status=eq.yes&locked_in=eq.false&select=player_id`);
+  await Promise.all(rows.map(row => db(`eois?event_id=eq.${encodeURIComponent(event.id)}&player_id=eq.${encodeURIComponent(row.player_id)}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ locked_in: true, locked_at: thursdayLockAt(event).toISOString(), updated_at: new Date().toISOString() }),
+  })));
+}
+
+async function generateEventSchedule(eventId, { force = true } = {}) {
+  const event = await getEvent(eventId);
+  if (!event) throw new Error("Event not found.");
+  if (isThursdayEvent(event) && !force && new Date() < thursdayScheduleAt(event)) {
+    return { saved: 0, message: "Thursday schedules open at 12:01 PM." };
+  }
+  const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
+  const players = attendingRows.map(row => ({ id: row.player_id }));
+  if (players.length < 4) return { saved: 0, message: "At least four players must be marked In before generating a schedule." };
+
+  const existing = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=*&order=match_number.asc`);
+  const protectedRows = existing.filter(row => row.status === "live" || row.pairing_manual || row.schedule_manual);
+  const replaceable = existing.filter(row => row.status !== "completed" && !protectedRows.some(item => item.id === row.id));
+  await Promise.all(replaceable.map(row => db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } })));
+
+  const protectedBySlot = new Map(protectedRows.map(row => [`${row.scheduled_start}|${row.court_name}`, row]));
   const stats = new Map(players.map(player => [player.id, { played: 0, lastPlayed: -1, teammates: new Map(), opponents: new Map() }]));
+  for (const row of protectedRows) {
+    recordPairingStats({ teamA: (row.team_a_player_ids || []).map(id => ({ id })), teamB: (row.team_b_player_ids || []).map(id => ({ id })) }, stats, 0);
+  }
   const rows = [];
   let round = 0;
-  let matchNumber = nextNumber + 1;
-  for (const [start, roundCourts] of [...slots.entries()].sort((a, b) => a[0] - b[0])) {
+  const usedMatchNumbers = new Set(protectedRows.map(row => Number(row.match_number)).filter(Boolean));
+  let matchNumber = 1;
+  const allocateMatchNumber = () => { while (usedMatchNumbers.has(matchNumber)) matchNumber += 1; usedMatchNumbers.add(matchNumber); return matchNumber++; };
+  for (const [start, roundCourts] of scheduleSlots(event)) {
     const used = new Set();
     for (const court of roundCourts) {
+      const key = `${minutesToTime(start)}|${court.name}`;
+      const protectedRow = protectedBySlot.get(key);
+      if (protectedRow) {
+        for (const playerId of [...(protectedRow.team_a_player_ids || []), ...(protectedRow.team_b_player_ids || [])]) used.add(playerId);
+        continue;
+      }
       const pairing = choosePairing(players, used, stats, round);
       if (!pairing) continue;
       [...pairing.teamA, ...pairing.teamB].forEach(player => used.add(player.id));
       rows.push({
         event_id: eventId,
-        match_number: matchNumber++,
+        match_number: allocateMatchNumber(),
         court_name: court.name,
         scheduled_start: minutesToTime(start),
         scheduled_end: minutesToTime(court.end),
@@ -330,14 +393,37 @@ async function generateEventSchedule(eventId) {
   if (rows.length) {
     await db("match_scores", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(rows) });
   }
+  await db(`events?id=eq.${encodeURIComponent(eventId)}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ schedule_generated_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
+  });
   return { saved: rows.length };
 }
 
 async function maybeGenerateEventSchedule(eventId) {
+  const event = await getEvent(eventId);
+  if (!event) return;
+  if (isThursdayEvent(event)) {
+    if (new Date() < thursdayScheduleAt(event)) return;
+    if (event.schedule_generated_at) return;
+    await generateEventSchedule(eventId, { force: false });
+    return;
+  }
   const existing = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=id&limit=1`);
   if (existing.length) return;
   const attending = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
   if (attending.length >= 4) await generateEventSchedule(eventId);
+}
+
+async function maintainThursdaySessions() {
+  const events = await db("events?select=*&order=event_date.asc");
+  for (const event of events) {
+    await lockDueThursdayEois(event);
+    if (isThursdayEvent(event) && new Date() >= thursdayScheduleAt(event) && !event.schedule_generated_at) {
+      await maybeGenerateEventSchedule(event.id);
+    }
+  }
 }
 
 function timezoneOffsetMs(date, timeZone) {
@@ -405,10 +491,11 @@ async function savePasscode(passcode) {
 
 async function appState() {
   await ensureUpcomingEvents();
+  await maintainThursdaySessions();
   const [players, events, eois, payments, scores, mediaRows] = await Promise.all([
     db("players?select=id,name,active&order=name.asc"),
     db("events?select=*&order=event_date.asc"),
-    db("eois?select=event_id,player_id,status,updated_at"),
+    db("eois?select=event_id,player_id,status,locked_in,locked_at,penalty_amount,updated_at"),
     db("payments?select=event_id,player_id,amount,paid,paid_at"),
     db("match_scores?select=*&order=created_at.asc"),
     db("media_items?select=*&order=captured_at.desc,created_at.desc"),
@@ -426,8 +513,28 @@ async function submitEoi(body) {
   if (!body.playerId || !body.eventId || !["yes", "no"].includes(body.status)) return reply({ error: "Invalid EOI." }, 400);
   const event = await getEvent(body.eventId);
   if (!event) return reply({ error: "Event not found." }, 404);
-  const closesAt = new Date(localDateTimeToUtc(event.event_date, eventStartTime(event), event.timezone).getTime() - 6 * 60 * 60 * 1000);
-  if (new Date() >= closesAt) return reply({ error: "The EOI deadline has passed." }, 409);
+  const now = new Date();
+  if (isThursdayEvent(event)) {
+    await lockDueThursdayEois(event);
+    const rows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&select=player_id,status,locked_in`);
+    const current = rows.find(row => row.player_id === body.playerId);
+    const yesCount = rows.filter(row => row.status === "yes").length;
+    const capacity = eventCapacity(event);
+    if (current?.status === "yes" && (current.locked_in || now >= thursdayLockAt(event))) {
+      return reply({ error: "Thursday players are locked after Tuesday 8:00 PM. Ask Admin to change this EOI." }, 409);
+    }
+    if (current?.status === "no" && now >= thursdayLockAt(event)) {
+      return reply({ error: "EOIs submitted by Tuesday 8:00 PM cannot be changed after the deadline." }, 409);
+    }
+    if (!current && now >= thursdayLateEoiCloseAt(event)) {
+      return reply({ error: "New Thursday EOIs close at 12:00 PM on Thursday." }, 409);
+    }
+    if (body.status === "yes" && current?.status !== "yes" && yesCount >= capacity) {
+      return reply({ error: `This session is full at ${capacity} players. Ask Admin if a place becomes available.` }, 409);
+    }
+  } else if (now.getTime() >= oldEoiDeadline(event)) {
+    return reply({ error: "The EOI deadline has passed." }, 409);
+  }
   await db("eois?on_conflict=event_id,player_id", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -441,10 +548,12 @@ async function markPaid(body) {
   const event = await getEvent(body.eventId);
   if (!event || !body.playerId) return reply({ error: "Event or player not found." }, 404);
   if (new Date() < localDateTimeToUtc(event.event_date, eventEndTime(event), event.timezone)) return reply({ error: "Payments open after the game finishes." }, 409);
-  const attending = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&select=player_id`);
-  if (!attending.some(row => row.player_id === body.playerId)) return reply({ error: "Only players marked In can confirm payment." }, 403);
+  const eoiRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&select=player_id,status,penalty_amount`);
+  const eoi = eoiRows.find(row => row.player_id === body.playerId);
+  const attending = eoiRows.filter(row => row.status === "yes");
+  if (!eoi || (eoi.status !== "yes" && Number(eoi.penalty_amount || 0) <= 0)) return reply({ error: "Only players with a session payment or late cancellation penalty can confirm payment." }, 403);
   const hours = await db(`event_player_hours?event_id=eq.${encodeURIComponent(body.eventId)}&select=player_id,hours_played`);
-  const amount = calculatePlayerAmount(event, attending, hours, body.playerId);
+  const amount = eoi.status === "yes" ? calculatePlayerAmount(event, attending, hours, body.playerId) : Number(eoi.penalty_amount || 0);
   await db("payments?on_conflict=event_id,player_id", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -726,7 +835,11 @@ async function saveEvent(body) {
     });
   }
   if (["event_date", "start_time", "end_time", "court_2_enabled", "court_2_name", "court_2_start_time", "court_2_end_time", "court_3_enabled", "court_3_name", "court_3_start_time", "court_3_end_time"].some(key => key in update)) {
-    await generateEventSchedule(body.eventId);
+    const savedEvent = await getEvent(body.eventId);
+    if (savedEvent) {
+      const force = !isThursdayEvent(savedEvent) || new Date() >= thursdayScheduleAt(savedEvent);
+      await generateEventSchedule(body.eventId, { force });
+    }
   }
   return reply({ ok: true });
 }
@@ -746,7 +859,27 @@ async function adminSaveMatch(body) {
   const target = Number(body.targetPoints || row.target_points || 21);
   const bestOf = Number(body.bestOf || row.best_of || 1);
   if (![15, 21, 30].includes(target) || ![1, 3].includes(bestOf)) return reply({ error: "Choose a valid point target and match format." }, 400);
-  await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ team_a_player_ids: teamA, team_b_player_ids: teamB, court_name: String(body.courtName || row.court_name || "Court 1"), scheduled_start: body.scheduledStart || row.scheduled_start, scheduled_end: body.scheduledEnd || row.scheduled_end, target_points: target, best_of: bestOf, updated_at: new Date().toISOString() }) });
+  const courtName = String(body.courtName || row.court_name || "Court 1");
+  const scheduledStart = body.scheduledStart || row.scheduled_start;
+  const scheduledEnd = body.scheduledEnd || row.scheduled_end;
+  const pairingChanged = JSON.stringify(teamA) !== JSON.stringify(row.team_a_player_ids || []) || JSON.stringify(teamB) !== JSON.stringify(row.team_b_player_ids || []);
+  const scheduleChanged = courtName !== String(row.court_name || "Court 1") || scheduledStart !== row.scheduled_start || scheduledEnd !== row.scheduled_end;
+  await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      team_a_player_ids: teamA,
+      team_b_player_ids: teamB,
+      court_name: courtName,
+      scheduled_start: scheduledStart,
+      scheduled_end: scheduledEnd,
+      target_points: target,
+      best_of: bestOf,
+      pairing_manual: Boolean(row.pairing_manual || pairingChanged),
+      schedule_manual: Boolean(row.schedule_manual || scheduleChanged),
+      updated_at: new Date().toISOString(),
+    }),
+  });
   return reply({ ok: true });
 }
 
@@ -785,6 +918,11 @@ async function adminSetEoi(body) {
   if (!body.eventId || !body.playerId || !["yes", "no", "none"].includes(body.status)) {
     return reply({ error: "Choose a valid player and EOI status." }, 400);
   }
+  const event = await getEvent(body.eventId);
+  if (!event) return reply({ error: "Event not found." }, 404);
+  await lockDueThursdayEois(event);
+  const currentRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}&select=*`);
+  const current = currentRows?.[0];
   if (body.status === "none") {
     await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}`, {
       method: "DELETE", headers: { Prefer: "return=minimal" },
@@ -794,6 +932,17 @@ async function adminSetEoi(body) {
     });
     return reply({ ok: true });
   }
+  let penaltyAmount = Number(current?.penalty_amount || 0);
+  let lockedIn = Boolean(current?.locked_in);
+  let lockedAt = current?.locked_at || null;
+  if (body.status === "no" && current?.status === "yes" && (lockedIn || (isThursdayEvent(event) && new Date() >= thursdayLockAt(event)))) {
+    const lockedRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&locked_in=eq.true&select=player_id`);
+    const lockedCount = Math.max(lockedRows.length, 1);
+    penaltyAmount = Number((totalCourtFee(event) / lockedCount).toFixed(2));
+    lockedIn = true;
+    lockedAt = lockedAt || thursdayLockAt(event).toISOString();
+  }
+  if (body.status === "yes" && penaltyAmount) penaltyAmount = 0;
   await db("eois?on_conflict=event_id,player_id", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -801,11 +950,29 @@ async function adminSetEoi(body) {
       event_id: body.eventId,
       player_id: body.playerId,
       status: body.status,
+      locked_in: lockedIn,
+      locked_at: lockedAt,
+      penalty_amount: penaltyAmount,
       updated_at: new Date().toISOString(),
     }),
   });
-  if (body.status === "yes") await maybeGenerateEventSchedule(body.eventId);
-  if (body.status === "no") {
+  if (penaltyAmount) {
+    await db("payments?on_conflict=event_id,player_id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ event_id: body.eventId, player_id: body.playerId, amount: penaltyAmount, paid: false, paid_at: null, updated_at: new Date().toISOString() }),
+    });
+  } else if (body.status === "yes") {
+    await db(`payments?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}`, {
+      method: "DELETE", headers: { Prefer: "return=minimal" },
+    });
+  }
+  if (body.status === "yes") {
+    const force = isThursdayEvent(event) && new Date() >= thursdayScheduleAt(event);
+    if (force) await generateEventSchedule(body.eventId, { force: true });
+    else await maybeGenerateEventSchedule(body.eventId);
+  }
+  if (body.status === "no" && !penaltyAmount) {
     await db(`payments?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}`, {
       method: "DELETE", headers: { Prefer: "return=minimal" },
     });
@@ -825,12 +992,12 @@ async function adminSetPayment(body) {
   }
   const event = await getEvent(body.eventId);
   if (!event) return reply({ error: "Event not found." }, 404);
-  const attending = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&select=player_id`);
-  if (!attending.some(row => row.player_id === body.playerId)) {
-    return reply({ error: "Only players marked In can have a payment recorded." }, 409);
-  }
+  const eoiRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&select=player_id,status,penalty_amount`);
+  const eoi = eoiRows.find(row => row.player_id === body.playerId);
+  const attending = eoiRows.filter(row => row.status === "yes");
+  if (!eoi || (eoi.status !== "yes" && Number(eoi.penalty_amount || 0) <= 0)) return reply({ error: "Only players with a session payment or late cancellation penalty can have a payment recorded." }, 409);
   const hours = await db(`event_player_hours?event_id=eq.${encodeURIComponent(body.eventId)}&select=player_id,hours_played`);
-  const amount = calculatePlayerAmount(event, attending, hours, body.playerId);
+  const amount = eoi.status === "yes" ? calculatePlayerAmount(event, attending, hours, body.playerId) : Number(eoi.penalty_amount || 0);
   await db("payments?on_conflict=event_id,player_id", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
