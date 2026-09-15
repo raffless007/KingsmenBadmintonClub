@@ -160,6 +160,7 @@ function auditActor(req, action, body) {
 }
 
 function auditTarget(action, body) {
+  if (action === "view-tab") return { type: "page", id: String(body.page || "") || null };
   if (body.eventId) return { type: "event", id: String(body.eventId) };
   if (body.scoreId) return { type: "match_score", id: String(body.scoreId) };
   if (body.playerId) return { type: "player", id: String(body.playerId) };
@@ -176,7 +177,7 @@ function auditDetails(body) {
     "courtName", "scheduledStart", "scheduledEnd", "mode", "fileName", "action",
     "announcementId", "matchId", "locationId", "role", "partnerPlayerId", "position",
     "courtCount", "matchMinutes", "changeoverMinutes", "entryFee", "kind", "title",
-    "adminTab", "tab", "tabLabel",
+    "adminTab", "tab", "tabLabel", "page", "pageLabel", "section", "sectionLabel",
   ];
   for (const key of scalarKeys) {
     if (body[key] !== undefined && body[key] !== null && body[key] !== "") details[key] = body[key];
@@ -951,12 +952,30 @@ const ADMIN_TAB_LABELS = {
   settings: "Settings",
 };
 
+const PAGE_LABELS = {
+  play: "Play",
+  scores: "Scores",
+  tournaments: "Tournaments",
+  media: "Media",
+  payments: "Payments",
+  admin: "Admin",
+};
+
 async function adminViewTab(body) {
   const tab = String(body.adminTab || body.tab || "");
   const tabLabel = ADMIN_TAB_LABELS[tab];
   if (!tabLabel) return reply({ error: "Unknown Admin tab." }, 400);
   body.adminTab = tab;
   body.tabLabel = tabLabel;
+  return reply({ ok: true });
+}
+
+async function viewPage(body) {
+  const page = String(body.page || "");
+  const pageLabel = PAGE_LABELS[page];
+  if (!pageLabel) return reply({ error: "Unknown clubhouse page." }, 400);
+  body.page = page;
+  body.pageLabel = pageLabel;
   return reply({ ok: true });
 }
 
@@ -2044,8 +2063,9 @@ export default async (req) => {
       "notification-preferences": body.playerId,
       "announcement-read": body.playerId,
       "tournament-register": body.playerId,
+      "view-tab": body.playerId,
     }[action];
-    if (req.method === "POST" && playerIdForAction && !isPlayer(req, playerIdForAction)) {
+    if (req.method === "POST" && playerIdForAction && !isPlayer(req, playerIdForAction) && !isAdmin(req)) {
       return audited(req, action, body, async () => reply({ error: "Player PIN required. Please sign in again." }, 401));
     }
     if (req.method === "POST" && action === "eoi") return audited(req, action, body, () => submitEoi(body));
@@ -2065,6 +2085,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "notification-preferences") return audited(req, action, body, () => saveNotificationPreferences(body));
     if (req.method === "POST" && action === "announcement-read") return audited(req, action, body, () => markAnnouncementRead(body));
     if (req.method === "POST" && action === "tournament-register") return audited(req, action, body, () => registerTournament(body));
+    if (req.method === "POST" && action === "view-tab") return audited(req, action, body, () => viewPage(body));
     if (req.method === "GET" && action === "score-state") return reply(await scoreState(url.searchParams.get("eventId")));
     if (req.method === "GET" && action === "admin-state") {
       return audited(req, action, body, async () => {
@@ -2079,7 +2100,7 @@ export default async (req) => {
       });
     }
 
-    if (!["admin-view-tab", "admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
+    if (!["view-tab", "admin-view-tab", "admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));

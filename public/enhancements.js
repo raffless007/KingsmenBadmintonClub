@@ -289,7 +289,7 @@
 
   function auditRoleLabel(log) {
     const role = log.details?.adminRole;
-    if (!role) return "Owner session";
+    if (!role) return log.actor_type === "player" ? "Player" : log.actor_type === "anonymous" ? "Visitor" : "Owner session";
     return ({ owner: "Owner", admin: "Administrator", treasurer: "Treasurer", scheduler: "Session Coordinator", scorekeeper: "Scorekeeper", media: "Media Manager" }[role] || role);
   }
 
@@ -301,6 +301,7 @@
 
   function auditArea(action, log = {}) {
     if (action === "admin-view-tab") return `Admin > ${log.details?.tabLabel || log.details?.adminTab || "dashboard"}`;
+    if (action === "view-tab") return log.details?.pageLabel || log.details?.page || "Clubhouse page";
     const areas = {
       "admin-save-event": "Weekly events",
       "admin-delete-event": "Weekly events",
@@ -331,13 +332,18 @@
       "admin-audit-log": "Audit log",
     };
     if (areas[action]) return areas[action];
-    if (["eoi", "paid", "shuttle-fee", "save-pairing", "announcement-read"].includes(action)) return "the weekly session area";
-    if (["score", "live-score", "live-score-new"].includes(action)) return "the Scores area";
-    if (["media-upload-url", "media-finalize", "admin-delete-media"].includes(action)) return "the Media area";
-    if (action.includes("tournament")) return "the Tournaments area";
-    if (["push-subscribe", "push-unsubscribe", "notification-preferences"].includes(action)) return "notification settings";
+    if (action === "eoi") return "Play > EOI";
+    if (action === "announcement-read") return "Play > Announcements";
+    if (action === "paid") return "Payments > Payment confirmation";
+    if (action === "shuttle-fee") return "Payments > Shuttle fees";
+    if (action === "save-pairing") return "Scores > Pairings";
+    if (["score"].includes(action)) return "Scores > Result entry";
+    if (["live-score", "live-score-new"].includes(action)) return "Scores > Live scoring";
+    if (["media-upload-url", "media-finalize", "admin-delete-media"].includes(action)) return "Media";
+    if (action.includes("tournament")) return "Tournaments";
+    if (["push-subscribe", "push-unsubscribe", "notification-preferences"].includes(action)) return "Profile > Notifications";
     if (action.startsWith("admin-")) return "Admin settings";
-    if (["player-pin", "add-player"].includes(action)) return "player sign-in or profile settings";
+    if (["player-pin", "add-player"].includes(action)) return "Player sign-in";
     return "the clubhouse";
   }
 
@@ -418,7 +424,8 @@
     if (action === "admin-reset-player-pin") return `Reset the PIN for ${auditPlayer(details.playerId)}.`;
     if (action === "admin-change-passcode") return "Changed the clubhouse admin passcode. The new passcode was not recorded.";
     if (action === "admin-revert-audit") return "Restored the earlier value from an audit entry.";
-    if (action === "player-pin") return "Signed in or created a player PIN. PIN digits were not recorded.";
+    if (action === "view-tab") return `Viewed the ${details.pageLabel || details.page || "clubhouse"} tab. No data was changed.`;
+    if (action === "player-pin") return details.mode === "set" ? "Created a new player PIN. PIN digits were not recorded." : "Verified the existing player PIN and signed in. PIN digits were not recorded.";
     if (action === "push-subscribe") return "Enabled push notifications for this device.";
     if (action === "push-unsubscribe") return "Disabled push notifications for this device.";
     if (action === "notification-preferences") return "Updated notification preferences.";
