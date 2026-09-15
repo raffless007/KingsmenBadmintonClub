@@ -38,8 +38,25 @@ Add these Netlify environment variables for Functions:
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase private service-role key |
 | `ADMIN_SESSION_SECRET` | Long random secret, at least 32 characters |
 | `INITIAL_ADMIN_PASSCODE` | First 4-8 digit admin passcode |
+| `VAPID_PUBLIC_KEY` | Public key generated for free browser Web Push |
+| `VAPID_PRIVATE_KEY` | Private VAPID key; keep it only in Netlify environment variables |
+| `VAPID_SUBJECT` | `https://kingsmenclub.netlify.app` |
 
 Never expose the service-role key in browser code.
+
+## Free Phone Notifications
+
+Browser Web Push is used for opt-in pending-payment reminders. It does not use
+a paid notification provider. Generate a VAPID key pair with
+`npx web-push generate-vapid-keys`, add the public and private keys plus the
+subject above to Netlify, then redeploy. After signing in as a player, use
+**Enable notifications** under **Who's playing**. On iPhone/iPad, first add the
+site to the Home Screen; Web Push is supported for Home Screen web apps on
+iOS/iPadOS 16.4 and later.
+
+The scheduled Netlify Function runs the daily pending-payment reminder. It is
+available on Netlify's free plan, subject to the account's normal function
+limits.
 
 ## Rules Implemented
 

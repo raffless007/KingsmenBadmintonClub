@@ -194,6 +194,27 @@ create table if not exists public.audit_logs (
   details jsonb not null default '{}'::jsonb
 );
 
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  player_id uuid not null references public.players(id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  user_agent text,
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+create table if not exists public.push_notification_log (
+  id uuid primary key default gen_random_uuid(),
+  player_id uuid not null references public.players(id) on delete cascade,
+  event_id uuid not null references public.events(id) on delete cascade,
+  notification_type text not null,
+  reminder_date date not null default (now() at time zone 'Australia/Sydney')::date,
+  created_at timestamptz not null default now(),
+  unique (player_id, event_id, notification_type, reminder_date)
+);
+
 create table if not exists public.reminder_log (
   id uuid primary key default gen_random_uuid(),
   event_id uuid not null references public.events(id) on delete cascade,
@@ -213,6 +234,8 @@ alter table public.match_scores enable row level security;
 alter table public.media_items enable row level security;
 alter table public.app_settings enable row level security;
 alter table public.audit_logs enable row level security;
+alter table public.push_subscriptions enable row level security;
+alter table public.push_notification_log enable row level security;
 alter table public.reminder_log enable row level security;
 alter table public.locations enable row level security;
 alter table public.location_court_rates enable row level security;
@@ -231,6 +254,12 @@ create index if not exists audit_logs_created_idx
 
 create index if not exists audit_logs_actor_idx
   on public.audit_logs (actor_id, created_at desc);
+
+create index if not exists push_subscriptions_player_idx
+  on public.push_subscriptions (player_id, last_seen_at desc);
+
+create index if not exists push_notification_log_date_idx
+  on public.push_notification_log (reminder_date desc, event_id);
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('kingsmen-media', 'kingsmen-media', true, 209715200, array['image/*','video/*'])

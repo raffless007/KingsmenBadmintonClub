@@ -6,11 +6,15 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import webpush from "web-push";
 
 const SUPABASE_URL = process.env.SUPABASE_URL?.replace(/\/+$/, "");
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET;
 const INITIAL_PASSCODE = process.env.INITIAL_ADMIN_PASSCODE || "1234";
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "https://kingsmenclub.netlify.app";
 const SYDNEY = "Australia/Sydney";
 const SYDNEY_SPORTS_CLUB_LOCATION_ID = "sydney-sports-club-kings-park";
 const BADMINTONWORX_LOCATION_ID = "badmintonworx-norwest";
@@ -25,6 +29,15 @@ function requireConfiguration() {
   if (!SUPABASE_URL || !SERVICE_KEY || !SESSION_SECRET) {
     throw new Error("Server environment variables are not configured.");
   }
+}
+
+function pushConfigured() {
+  return Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && VAPID_SUBJECT);
+}
+
+function configurePush() {
+  if (pushConfigured()) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  return pushConfigured();
 }
 
 function storageClient() {
@@ -1239,6 +1252,42 @@ async function playerPin(body) {
   return reply({ ok: true, token: signPlayerSession(player.id), player: { id: player.id, name: player.name, active: player.active, has_pin: true } });
 }
 
+async function pushConfig() {
+  return reply({ enabled: configurePush(), publicKey: VAPID_PUBLIC_KEY || null });
+}
+
+async function savePushSubscription(body) {
+  if (!configurePush()) return reply({ error: "Push notifications are not configured yet." }, 503);
+  const subscription = body.subscription && typeof body.subscription === "object" ? body.subscription : {};
+  const endpoint = String(subscription.endpoint || "").trim();
+  const p256dh = String(subscription.keys?.p256dh || "").trim();
+  const auth = String(subscription.keys?.auth || "").trim();
+  if (!body.playerId || !endpoint.startsWith("https://") || !p256dh || !auth) return reply({ error: "Invalid push subscription." }, 400);
+  await db("push_subscriptions?on_conflict=endpoint", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({
+      player_id: body.playerId,
+      endpoint,
+      p256dh,
+      auth,
+      user_agent: String(body.userAgent || "").slice(0, 500) || null,
+      last_seen_at: new Date().toISOString(),
+    }),
+  });
+  return reply({ ok: true });
+}
+
+async function removePushSubscription(body) {
+  const endpoint = String(body.endpoint || "").trim();
+  if (!body.playerId || !endpoint) return reply({ error: "Invalid push subscription." }, 400);
+  await db(`push_subscriptions?player_id=eq.${encodeURIComponent(body.playerId)}&endpoint=eq.${encodeURIComponent(endpoint)}`, {
+    method: "DELETE",
+    headers: { Prefer: "return=minimal" },
+  });
+  return reply({ ok: true });
+}
+
 async function removePlayer(body) {
   await db(`players?id=eq.${encodeURIComponent(body.playerId)}`, {
     method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: false }),
@@ -1538,6 +1587,7 @@ export default async (req) => {
     const action = url.searchParams.get("action") || "state";
     const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
 
+    if (req.method === "GET" && action === "push-config") return pushConfig();
     if (req.method === "GET" && action === "state") return reply(await appState());
     const playerIdForAction = {
       eoi: body.playerId,
@@ -1549,6 +1599,8 @@ export default async (req) => {
       "media-upload-url": body.playerId,
       "media-finalize": body.playerId,
       "save-pairing": body.playerId,
+      "push-subscribe": body.playerId,
+      "push-unsubscribe": body.playerId,
     }[action];
     if (req.method === "POST" && playerIdForAction && !isPlayer(req, playerIdForAction)) {
       return audited(req, action, body, async () => reply({ error: "Player PIN required. Please sign in again." }, 401));
@@ -1565,6 +1617,8 @@ export default async (req) => {
     if (req.method === "POST" && action === "add-player") return audited(req, action, body, () => addPlayer(body));
     if (req.method === "POST" && action === "player-pin") return audited(req, action, body, () => playerPin(body));
     if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body));
+    if (req.method === "POST" && action === "push-subscribe") return audited(req, action, body, () => savePushSubscription(body));
+    if (req.method === "POST" && action === "push-unsubscribe") return audited(req, action, body, () => removePushSubscription(body));
     if (req.method === "GET" && action === "admin-state") {
       return audited(req, action, body, async () => {
         if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
