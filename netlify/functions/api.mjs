@@ -630,6 +630,24 @@ function signSession() {
   return `${payload}.${signature}`;
 }
 
+function signPlayerSession(playerId) {
+  const payload = Buffer.from(JSON.stringify({ kind: "player", playerId, exp: Date.now() + 12 * 60 * 60 * 1000 })).toString("base64url");
+  const signature = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function isPlayer(req, playerId) {
+  const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return false;
+  const expected = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
+  try {
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString());
+    return session.kind === "player" && session.playerId === playerId && session.exp > Date.now();
+  } catch { return false; }
+}
+
 function isAdmin(req) {
   const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
   const [payload, signature] = token.split(".");
@@ -661,8 +679,8 @@ async function savePasscode(passcode) {
 async function appState() {
   await ensureUpcomingEvents();
   await maintainThursdaySessions();
-  const [players, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments] = await Promise.all([
-    db("players?select=id,name,active&order=name.asc"),
+  const [playerRows, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments] = await Promise.all([
+    db("players?select=id,name,active,pin_hash&order=name.asc"),
     db("events?select=*&order=event_date.asc"),
     db("eois?select=event_id,player_id,status,locked_in,locked_at,penalty_amount,updated_at"),
     db("payments?select=event_id,player_id,amount,paid,paid_at"),
@@ -673,6 +691,7 @@ async function appState() {
     db("tournaments?select=*&order=tournament_date.asc,created_at.desc"),
   ]);
   const playerHours = await db("event_player_hours?select=event_id,player_id,hours_played,updated_at");
+  const players = playerRows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) }));
   const media = mediaRows.map(item => ({ ...item, public_url: publicMediaUrl(item.storage_path) }));
   const eventPairings = Object.fromEntries(await Promise.all(events.map(async event => {
     const rows = await db(`app_settings?key=eq.${encodeURIComponent(`pairings:${event.id}`)}&select=value`);
@@ -1124,7 +1143,26 @@ async function addPlayer(body) {
     method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" },
     body: JSON.stringify({ name, active: true }),
   });
-  return reply({ ok: true, player: rows?.[0] || null });
+  const player = rows?.[0];
+  return reply({ ok: true, player: player ? { id: player.id, name: player.name, active: player.active, has_pin: Boolean(player.pin_hash) } : null });
+}
+
+async function playerPin(body) {
+  const playerId = String(body.playerId || "").trim();
+  const pin = String(body.pin || "").trim();
+  if (!playerId || !/^(?:\d{4}|\d{6})$/.test(pin)) return reply({ error: "PIN must be exactly 4 or 6 digits." }, 400);
+  const rows = await db(`players?id=eq.${encodeURIComponent(playerId)}&select=id,name,active,pin_hash`);
+  const player = rows?.[0];
+  if (!player?.active) return reply({ error: "Player not found." }, 404);
+  if (player.pin_hash) {
+    if (!verifyPasscode(pin, player.pin_hash)) return reply({ error: "Incorrect PIN." }, 401);
+  } else {
+    if (body.mode !== "set") return reply({ error: "Set a PIN to finish your first login." }, 409);
+    await db(`players?id=eq.${encodeURIComponent(playerId)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ pin_hash: passcodeHash(pin) }),
+    });
+  }
+  return reply({ ok: true, token: signPlayerSession(player.id), player: { id: player.id, name: player.name, active: player.active, has_pin: true } });
 }
 
 async function removePlayer(body) {
@@ -1414,6 +1452,20 @@ export default async (req) => {
     const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
 
     if (req.method === "GET" && action === "state") return reply(await appState());
+    const playerIdForAction = {
+      eoi: body.playerId,
+      paid: body.playerId,
+      "shuttle-fee": body.playerId,
+      score: body.submittedBy,
+      "live-score-new": body.playerId,
+      "live-score": body.playerId,
+      "media-upload-url": body.playerId,
+      "media-finalize": body.playerId,
+      "save-pairing": body.playerId,
+    }[action];
+    if (req.method === "POST" && playerIdForAction && !isPlayer(req, playerIdForAction)) {
+      return reply({ error: "Player PIN required. Please sign in again." }, 401);
+    }
     if (req.method === "POST" && action === "eoi") return submitEoi(body);
     if (req.method === "POST" && action === "paid") return markPaid(body);
     if (req.method === "POST" && action === "shuttle-fee") return updateShuttleFee(body);
@@ -1424,6 +1476,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "media-finalize") return finalizeMediaUpload(body);
     if (req.method === "POST" && action === "admin-login") return adminLogin(body);
     if (req.method === "POST" && action === "add-player") return addPlayer(body);
+    if (req.method === "POST" && action === "player-pin") return playerPin(body);
     if (req.method === "POST" && action === "save-pairing") return savePairing(body);
     if (req.method === "GET" && action === "admin-state") {
       if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);

@@ -8,6 +8,7 @@ create table if not exists public.players (
   name text not null unique,
   email text,
   active boolean not null default true,
+  pin_hash text,
   created_at timestamptz not null default now()
 );
 
