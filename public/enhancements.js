@@ -407,6 +407,7 @@
     if (enhancement.installed) return;
     enhancement.installed = true;
     window.addEventListener("kbc-audit-updated", () => setTimeout(renderAuditEnhancements, 0));
+    document.addEventListener("click", (event) => { if (event.target.closest("[data-page], [data-tab]")) setTimeout(enhanceRender, 0); });
     enhancement.originalRender = evalGlobal("render");
     if (enhancement.originalRender) {
       const wrapped = function () { enhancement.originalRender.apply(this, arguments); setTimeout(enhanceRender, 0); };
