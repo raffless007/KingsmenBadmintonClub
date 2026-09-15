@@ -3,7 +3,7 @@
 
   const API = "/.netlify/functions/api";
   const queueKey = "kbc-live-score-queue";
-  const enhancement = { installed: false, originalRender: null, supabase: null, channel: null, pollTimer: null, flushing: false, adminRoles: [] };
+  const enhancement = { installed: false, originalRender: null, supabase: null, channel: null, pollTimer: null, flushing: false, adminRoles: [], lastAdminTab: null };
   const $ = (id) => document.getElementById(id);
   const evalGlobal = (name) => {
     try { return window[name] || window.eval(name); } catch { return undefined; }
@@ -457,6 +457,11 @@
 
   function enhanceRender() {
     injectStyles();
+    const activeAdminTab = document.querySelector("#adminPage .tabs [data-tab].active");
+    if (adminToken() && activeAdminTab && enhancement.lastAdminTab !== activeAdminTab.dataset.tab) {
+      enhancement.lastAdminTab = activeAdminTab.dataset.tab;
+      logAdminTabView(enhancement.lastAdminTab);
+    } else if (!adminToken()) enhancement.lastAdminTab = null;
     const current = state();
     const events = current.events || [];
     const selected = (() => { try { return window.eval("upcoming()[selected]"); } catch { return events[0]; } })();
@@ -479,8 +484,6 @@
     enhancement.installed = true;
     window.addEventListener("kbc-audit-updated", () => setTimeout(renderAuditEnhancements, 0));
     document.addEventListener("click", (event) => {
-      const tab = event.target.closest("[data-tab]");
-      if (tab) logAdminTabView(tab.dataset.tab);
       if (event.target.closest("[data-page], [data-tab]")) setTimeout(enhanceRender, 0);
     });
     enhancement.originalRender = evalGlobal("render");
