@@ -107,7 +107,8 @@
       if(!event)return;
       const mine=eoi(event.id),yes=eventPlayers(event.id),policy=eoiPolicy(event,mine,yes.length),open=policy.canRespond,no=activePlayers().filter(p=>eoi(event.id,p.id)?.status==='no'),pending=activePlayers().filter(p=>!eoi(event.id,p.id));
       $('eventDate').textContent=fmt(new Date(event.event_date+'T12:00:00'));
-      $('eventTime').textContent=`${court1Name(event)} · ${event.start_time.slice(0,5)} – ${event.end_time.slice(0,5)}`;
+      const thirdCourtHasDifferentTime=event.court_3_enabled&&((event.court_3_start_time||'21:00').slice(0,5)!=='21:00'||(event.court_3_end_time||'23:00').slice(0,5)!=='23:00');
+      $('eventTime').textContent=`${event.start_time.slice(0,5)} – ${event.end_time.slice(0,5)}${thirdCourtHasDifferentTime?` · ${event.court_3_name||'Court 3'}: ${(event.court_3_start_time||'21:00').slice(0,5)} – ${(event.court_3_end_time||'23:00').slice(0,5)}`:''}`;
       $('eventLocation').textContent=event.location;
       $('eventSuburb').textContent=event.suburb;
       $('court2Details').classList.remove('hidden');
