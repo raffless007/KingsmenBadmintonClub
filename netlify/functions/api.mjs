@@ -153,7 +153,7 @@ async function db(path, options = {}) {
 }
 
 function auditActor(req, action, body) {
-  if (action === "admin-login" && body.playerId) return { type: "admin", id: String(body.playerId) };
+  if (action === "admin-login") return { type: "admin", id: body.__adminActorId || (body.playerPin && body.playerId ? String(body.playerId) : null) };
   if (isAdmin(req)) return { type: "admin", id: adminSession(req)?.playerId || null };
   const playerId = body.playerId || body.submittedBy || (action === "player-pin" ? body.playerId : null);
   return playerId ? { type: "player", id: String(playerId) } : { type: "anonymous", id: null };
@@ -1345,7 +1345,7 @@ async function recordScoreAction(body) {
   });
 }
 
-async function adminLogin(body) {
+async function adminLogin(body, req) {
   if (body.playerId && body.playerPin) {
     const players = await db(`players?id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=id,name,pin_hash`);
     const roles = await db(`admin_roles?player_id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=role`);
@@ -1353,6 +1353,7 @@ async function adminLogin(body) {
     const roleDefinition = await getRoleDefinition(role);
     const validRole = role === "owner" || Boolean(roleDefinition?.active);
     if (!players?.[0]?.pin_hash || !verifyPasscode(String(body.playerPin), players[0].pin_hash) || !role || !validRole) return reply({ error: "Admin player PIN or role is incorrect." }, 401);
+    body.__adminActorId = String(body.playerId);
     body.__adminRole = role;
     body.__adminIdentity = "player-pin";
     return reply({ ok: true, role, token: signAdminSession(role, body.playerId) });
@@ -1364,9 +1365,10 @@ async function adminLogin(body) {
     stored = await getPasscodeSetting();
   }
   if (!verifyPasscode(body.passcode, stored)) return reply({ error: "Incorrect passcode." }, 401);
+  body.__adminActorId = body.playerId && req && isPlayer(req, body.playerId) ? String(body.playerId) : null;
   body.__adminRole = "owner";
   body.__adminIdentity = "shared-passcode";
-  return reply({ ok: true, role: "owner", token: signAdminSession("owner") });
+  return reply({ ok: true, role: "owner", token: signAdminSession("owner", body.__adminActorId) });
 }
 
 async function changePasscode(body) {
@@ -2004,7 +2006,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "live-score") return audited(req, action, body, () => liveScore(body));
     if (req.method === "POST" && action === "media-upload-url") return audited(req, action, body, () => createMediaUpload(body));
     if (req.method === "POST" && action === "media-finalize") return audited(req, action, body, () => finalizeMediaUpload(body));
-    if (req.method === "POST" && action === "admin-login") return audited(req, action, body, () => adminLogin(body));
+    if (req.method === "POST" && action === "admin-login") return audited(req, action, body, () => adminLogin(body, req));
     if (req.method === "POST" && action === "add-player") return audited(req, action, body, () => addPlayer(body));
     if (req.method === "POST" && action === "player-pin") return audited(req, action, body, () => playerPin(body));
     if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body));
