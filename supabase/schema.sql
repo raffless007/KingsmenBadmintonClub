@@ -17,7 +17,7 @@ create table if not exists public.events (
   start_time time not null default '21:00',
   end_time time not null default '23:00',
   timezone text not null default 'Australia/Sydney',
-  location text not null default 'Sydney Sports Club',
+  location text not null default 'Sydney Sports Park - Kings Park',
   suburb text not null default 'Kings Park',
   location_id text,
   court_1_name text not null default 'Court 1',
@@ -213,7 +213,9 @@ values ('admin_passcode_hash', null)
 on conflict (key) do nothing;
 
 insert into public.locations (id, name, suburb, timezone)
-values ('sydney-sports-club-kings-park', 'Sydney Sports Club', 'Kings Park', 'Australia/Sydney')
+values
+  ('sydney-sports-club-kings-park', 'Sydney Sports Park - Kings Park', 'Kings Park', 'Australia/Sydney'),
+  ('badmintonworx-norwest', 'BadmintonWorx Norwest', 'Subject to availability', 'Australia/Sydney')
 on conflict (id) do nothing;
 
 insert into public.location_court_rates (location_id, day_type, start_minute, end_minute, hourly_rate)

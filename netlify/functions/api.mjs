@@ -13,6 +13,7 @@ const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET;
 const INITIAL_PASSCODE = process.env.INITIAL_ADMIN_PASSCODE || "1234";
 const SYDNEY = "Australia/Sydney";
 const SYDNEY_SPORTS_CLUB_LOCATION_ID = "sydney-sports-club-kings-park";
+const BADMINTONWORX_LOCATION_ID = "badmintonworx-norwest";
 const MEDIA_BUCKET = "kingsmen-media";
 const MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 
@@ -78,8 +79,14 @@ function totalCourtFee(event) {
 }
 
 function locationIdForValues(location, suburb, fallback = null) {
-  if (String(location || "").trim().toLowerCase() === "sydney sports club"
-    && String(suburb || "").trim().toLowerCase() === "kings park") return SYDNEY_SPORTS_CLUB_LOCATION_ID;
+  const locationText = String(location || "").trim().toLowerCase();
+  const suburbText = String(suburb || "").trim().toLowerCase();
+  if ((locationText === "sydney sports club"
+    || locationText === "sydney sports park"
+    || locationText === "sydney sports club - kings park"
+    || locationText === "sydney sports park - kings park")
+    && suburbText === "kings park") return SYDNEY_SPORTS_CLUB_LOCATION_ID;
+  if (locationText === "badmintonworx norwest") return BADMINTONWORX_LOCATION_ID;
   return fallback || null;
 }
 
@@ -173,7 +180,7 @@ function eventDefaults(eventDate) {
   if (day === 4) {
     return {
       event_date: eventDate,
-      location: "Sydney Sports Club",
+      location: "Sydney Sports Park - Kings Park",
       suburb: "Kings Park",
       location_id: SYDNEY_SPORTS_CLUB_LOCATION_ID,
       court_1_name: "Court 1",
@@ -189,7 +196,7 @@ function eventDefaults(eventDate) {
     event_date: eventDate,
     location: "BadmintonWorx Norwest",
     suburb: "Subject to availability",
-    location_id: null,
+    location_id: BADMINTONWORX_LOCATION_ID,
     court_1_name: "Court 1",
     court_2_name: "Court 2",
     court_2_enabled: true,
@@ -262,7 +269,7 @@ function courtFeeFromRates(eventDate, startTime, endTime, rates) {
 }
 
 function automaticCourtFees(event, rates) {
-  if (event.location_id !== SYDNEY_SPORTS_CLUB_LOCATION_ID) return null;
+  if (!event.location_id || !rates.length) return null;
   const courtFee = courtFeeFromRates(event.event_date, event.start_time, event.end_time, rates);
   const court2Fee = event.court_2_enabled
     ? courtFeeFromRates(event.event_date, event.court_2_start_time, event.court_2_end_time, rates)
@@ -281,12 +288,13 @@ async function locationRates(locationId) {
 async function syncDefaultCourtFees() {
   const today = datePartsInSydney();
   const todayText = `${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")}`;
-  const [events, rates] = await Promise.all([
-    db(`events?location_id=eq.${encodeURIComponent(SYDNEY_SPORTS_CLUB_LOCATION_ID)}&event_date=gte.${todayText}&select=*`),
-    locationRates(SYDNEY_SPORTS_CLUB_LOCATION_ID),
-  ]);
+  const events = await db(`events?location_id=not.is.null&event_date=gte.${todayText}&select=*`);
+  const rateSets = Object.fromEntries(await Promise.all(
+    [...new Set(events.map(event => event.location_id).filter(Boolean))]
+      .map(async locationId => [locationId, await locationRates(locationId)])
+  ));
   await Promise.all(events.map(async event => {
-    const fees = automaticCourtFees(event, rates);
+    const fees = automaticCourtFees(event, rateSets[event.location_id] || []);
     if (!fees) return;
     const update = { updated_at: new Date().toISOString() };
     if (!event.court_fee_manual) update.court_fee = fees.court_fee;
@@ -653,13 +661,15 @@ async function savePasscode(passcode) {
 async function appState() {
   await ensureUpcomingEvents();
   await maintainThursdaySessions();
-  const [players, events, eois, payments, scores, mediaRows] = await Promise.all([
+  const [players, events, eois, payments, scores, mediaRows, locations, locationCourtRates] = await Promise.all([
     db("players?select=id,name,active&order=name.asc"),
     db("events?select=*&order=event_date.asc"),
     db("eois?select=event_id,player_id,status,locked_in,locked_at,penalty_amount,updated_at"),
     db("payments?select=event_id,player_id,amount,paid,paid_at"),
     db("match_scores?select=*&order=created_at.asc"),
     db("media_items?select=*&order=captured_at.desc,created_at.desc"),
+    db("locations?select=id,name,suburb,timezone,active&active=eq.true&order=name.asc"),
+    db("location_court_rates?select=location_id,day_type,start_minute,end_minute,hourly_rate&order=location_id,day_type,start_minute"),
   ]);
   const playerHours = await db("event_player_hours?select=event_id,player_id,hours_played,updated_at");
   const media = mediaRows.map(item => ({ ...item, public_url: publicMediaUrl(item.storage_path) }));
@@ -668,7 +678,7 @@ async function appState() {
     const value = rows?.[0]?.value;
     try { return [event.id, value ? JSON.parse(value) : null]; } catch { return [event.id, null]; }
   })));
-  return { players, events, eois, payments, scores, media, playerHours, eventPairings, serverNow: new Date().toISOString() };
+  return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, serverNow: new Date().toISOString() };
 }
 
 async function adminState() {
@@ -992,19 +1002,23 @@ async function saveEvent(body) {
   const update = Object.fromEntries(Object.entries(body.changes || {}).filter(([key]) => allowed.includes(key)));
   const proposed = { ...existing, ...update };
   const locationChanged = ["location", "suburb", "location_id"].some(key => key in update);
-  const inferredLocationId = locationIdForValues(proposed.location, proposed.suburb, locationChanged ? null : (proposed.location_id || existing.location_id));
+  const explicitLocationId = "location_id" in update ? update.location_id : null;
+  const inferredLocationId = explicitLocationId || locationIdForValues(proposed.location, proposed.suburb, locationChanged ? null : existing.location_id);
   if (["location", "suburb", "location_id"].some(key => key in update)) update.location_id = inferredLocationId;
   for (const [feeKey, manualKey] of [["court_fee", "court_fee_manual"], ["court_2_fee", "court_2_fee_manual"], ["court_3_fee", "court_3_fee_manual"]]) {
     if (feeKey in update && Number(update[feeKey]) !== Number(existing[feeKey])) update[manualKey] = true;
   }
   const nextEvent = { ...existing, ...update };
   const pricingInputsChanged = ["event_date", "start_time", "end_time", "location", "suburb", "location_id", "court_2_enabled", "court_2_start_time", "court_2_end_time", "court_3_enabled", "court_3_start_time", "court_3_end_time"].some(key => key in update);
-  if (pricingInputsChanged && nextEvent.location_id === SYDNEY_SPORTS_CLUB_LOCATION_ID) {
-    const fees = automaticCourtFees(nextEvent, await locationRates(SYDNEY_SPORTS_CLUB_LOCATION_ID));
+  if (pricingInputsChanged && nextEvent.location_id) {
+    const fees = automaticCourtFees(nextEvent, await locationRates(nextEvent.location_id));
     if (fees) {
-      if (!nextEvent.court_fee_manual) update.court_fee = fees.court_fee;
-      if (!nextEvent.court_2_fee_manual) update.court_2_fee = fees.court_2_fee;
-      if (!nextEvent.court_3_fee_manual) update.court_3_fee = fees.court_3_fee;
+      update.court_fee = fees.court_fee;
+      update.court_2_fee = fees.court_2_fee;
+      update.court_3_fee = fees.court_3_fee;
+      update.court_fee_manual = false;
+      update.court_2_fee_manual = false;
+      update.court_3_fee_manual = false;
     }
   }
   update.updated_at = new Date().toISOString();
