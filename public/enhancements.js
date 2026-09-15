@@ -520,8 +520,9 @@
     renderAdminRoleLogin();
     renderAuditEnhancements();
     const signedInPlayer = evalGlobal("playerToken");
-    if (signedInPlayer && !enhancement.alertPollTimer) enhancement.alertPollTimer = setInterval(() => { if (evalGlobal("playerToken") && !document.activeElement?.matches("input,select,textarea,[contenteditable=\"true\"]") && !( $("mediaFile")?.files?.length )) refresh(); }, 10000);
-    if (!signedInPlayer && enhancement.alertPollTimer) { clearInterval(enhancement.alertPollTimer); enhancement.alertPollTimer = null; }
+    const playerAlertPollingAllowed = signedInPlayer && !adminToken();
+    if (playerAlertPollingAllowed && !enhancement.alertPollTimer) enhancement.alertPollTimer = setInterval(() => { if (evalGlobal("playerToken") && !adminToken() && !document.activeElement?.matches("input,select,textarea,[contenteditable=\"true\"]") && !$("mediaFile")?.files?.length) refresh(); }, 10000);
+    if (!playerAlertPollingAllowed && enhancement.alertPollTimer) { clearInterval(enhancement.alertPollTimer); enhancement.alertPollTimer = null; }
     setupRealtime();
     flushQueue();
   }
