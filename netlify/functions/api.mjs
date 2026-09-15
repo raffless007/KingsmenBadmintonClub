@@ -15,6 +15,8 @@ const INITIAL_PASSCODE = process.env.INITIAL_ADMIN_PASSCODE || "1234";
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "https://kingsmenclub.netlify.app";
+// Publishable keys are safe to expose to the browser; the service-role key never leaves this function.
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || "sb_publishable_AYFrOSmDDI5os5wSQSddZw_rUlDcvo2";
 const SYDNEY = "Australia/Sydney";
 const SYDNEY_SPORTS_CLUB_LOCATION_ID = "sydney-sports-club-kings-park";
 const BADMINTONWORX_LOCATION_ID = "badmintonworx-norwest";
@@ -200,6 +202,8 @@ async function writeAuditLog({ req, action, body, response, failed = false }) {
         status_code: response?.status || 500,
         succeeded: !failed && (response?.status || 500) < 400,
         details: auditDetails(body),
+        before_data: body.__auditBefore || null,
+        after_data: body.__auditAfter || null,
       }),
     });
   } catch (error) {
@@ -209,12 +213,51 @@ async function writeAuditLog({ req, action, body, response, failed = false }) {
 
 async function audited(req, action, body, handler) {
   try {
+    body.__auditBefore = await auditSnapshot(action, body);
     const response = await handler();
+    body.__auditAfter = await auditSnapshot(action, body);
     await writeAuditLog({ req, action, body, response });
     return response;
   } catch (error) {
     await writeAuditLog({ req, action, body, failed: true });
     throw error;
+  }
+}
+
+async function auditSnapshot(action, body) {
+  try {
+    let table = null;
+    let query = null;
+    if (body.eventId && ["eoi", "admin-set-eoi"].includes(action)) {
+      table = "eois";
+      query = `event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId || "")}&select=*`;
+    } else if (body.eventId && ["paid", "admin-set-payment"].includes(action)) {
+      table = "payments";
+      query = `event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId || "")}&select=*`;
+    } else if (body.eventId && ["admin-save-event", "admin-delete-event"].includes(action)) {
+      table = "events";
+      query = `id=eq.${encodeURIComponent(body.eventId)}&select=*`;
+    } else if (body.scoreId) {
+      table = "match_scores";
+      query = `id=eq.${encodeURIComponent(body.scoreId)}&select=*`;
+    } else if (body.playerId && ["admin-update-player", "admin-remove-player", "admin-reset-player-pin", "player-pin"].includes(action)) {
+      table = "players";
+      query = `id=eq.${encodeURIComponent(body.playerId)}&select=*`;
+    } else if (body.tournamentId && action.startsWith("admin-")) {
+      table = "tournaments";
+      query = `id=eq.${encodeURIComponent(body.tournamentId)}&select=*`;
+    } else if (body.announcementId) {
+      table = "announcements";
+      query = `id=eq.${encodeURIComponent(body.announcementId)}&select=*`;
+    }
+    if (!table || !query) return null;
+    const rows = await db(`${table}?${query}`);
+    if (!rows?.[0]) return null;
+    const { pin_hash, ...safe } = rows[0];
+    return safe;
+  } catch (error) {
+    console.error("Audit snapshot failed", error);
+    return null;
   }
 }
 
@@ -705,8 +748,8 @@ function verifyPasscode(passcode, stored) {
   return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer);
 }
 
-function signSession() {
-  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + 8 * 60 * 60 * 1000 })).toString("base64url");
+function signSession(role = "owner") {
+  const payload = Buffer.from(JSON.stringify({ role, exp: Date.now() + 8 * 60 * 60 * 1000 })).toString("base64url");
   const signature = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
   return `${payload}.${signature}`;
 }
@@ -739,6 +782,32 @@ function isAdmin(req) {
   catch { return false; }
 }
 
+function adminRole(req) {
+  const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+  const expected = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try {
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString());
+    return session.exp > Date.now() ? (session.role || "owner") : null;
+  } catch { return null; }
+}
+
+const ADMIN_PERMISSIONS = {
+  owner: new Set(["events", "schedule", "eoi", "money", "scores", "roster", "media", "tournaments", "announcements", "roles", "audit"]),
+  admin: new Set(["events", "schedule", "eoi", "money", "scores", "roster", "media", "tournaments", "announcements", "audit"]),
+  treasurer: new Set(["money", "audit"]),
+  scheduler: new Set(["events", "schedule", "eoi", "audit"]),
+  scorekeeper: new Set(["scores", "schedule", "audit"]),
+  media: new Set(["media", "audit"]),
+};
+
+function hasAdminPermission(req, permission) {
+  const role = adminRole(req);
+  return Boolean(role && ADMIN_PERMISSIONS[role]?.has(permission));
+}
+
 async function getEvent(eventId) {
   const rows = await db(`events?id=eq.${encodeURIComponent(eventId)}&select=*`);
   return rows?.[0];
@@ -760,7 +829,7 @@ async function savePasscode(passcode) {
 async function appState() {
   await ensureUpcomingEvents();
   await maintainThursdaySessions();
-  const [playerRows, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments] = await Promise.all([
+  const [playerRows, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements, tournamentEntries, tournamentMatches] = await Promise.all([
     db("players?select=id,name,active,pin_hash&order=name.asc"),
     db("events?select=*&order=event_date.asc"),
     db("eois?select=event_id,player_id,status,locked_in,locked_at,penalty_amount,updated_at"),
@@ -770,6 +839,11 @@ async function appState() {
     db("locations?select=id,name,suburb,timezone,active&active=eq.true&order=name.asc"),
     db("location_court_rates?select=location_id,day_type,start_minute,end_minute,hourly_rate&order=location_id,day_type,start_minute"),
     db("tournaments?select=*&order=tournament_date.asc,created_at.desc"),
+    db("event_waitlist?select=*&order=event_id,position"),
+    db("player_notification_preferences?select=*&order=player_id"),
+    db("announcements?select=*&archived_at=is.null&order=pinned.desc,created_at.desc"),
+    db("tournament_entries?select=*&order=created_at.asc"),
+    db("tournament_matches?select=*&order=tournament_id,round,match_number"),
   ]);
   const playerHours = await db("event_player_hours?select=event_id,player_id,hours_played,updated_at");
   const players = playerRows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) }));
@@ -779,17 +853,73 @@ async function appState() {
     const value = rows?.[0]?.value;
     try { return [event.id, value ? JSON.parse(value) : null]; } catch { return [event.id, null]; }
   })));
-  return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, tournaments, serverNow: new Date().toISOString() };
+  return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements, tournamentEntries, tournamentMatches, serverNow: new Date().toISOString() };
 }
 
 async function adminState() {
   const rows = await db("players?select=id,name,active,pin_hash&order=name.asc");
-  return { players: rows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) })) };
+  const roles = await db("admin_roles?select=*&order=role,player_id");
+  return { players: rows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) })), roles: roles || [] };
 }
 
 async function adminAuditLog() {
-  const logs = await db("audit_logs?select=id,created_at,actor_type,actor_id,action,target_type,target_id,status_code,succeeded,details&order=created_at.desc&limit=200");
+  const logs = await db("audit_logs?select=id,created_at,actor_type,actor_id,action,target_type,target_id,status_code,succeeded,details,before_data,after_data,reverted_at,reverted_by&order=created_at.desc&limit=200");
   return { logs: Array.isArray(logs) ? logs : [] };
+}
+
+async function scoreState(eventId) {
+  const filter = eventId ? `&event_id=eq.${encodeURIComponent(eventId)}` : "";
+  const scores = await db(`match_scores?select=*&order=match_number.asc,created_at.asc${filter}`);
+  return { scores: Array.isArray(scores) ? scores : [], serverNow: new Date().toISOString() };
+}
+
+async function promoteWaitlist(eventId) {
+  const event = await getEvent(eventId);
+  if (!event) return 0;
+  const [yesRows, pendingRows] = await Promise.all([
+    db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`),
+    db(`event_waitlist?event_id=eq.${encodeURIComponent(eventId)}&status=eq.pending&order=position.asc,created_at.asc&select=*`),
+  ]);
+  let available = eventCapacity(event) - yesRows.length;
+  let promoted = 0;
+  for (const waitlisted of pendingRows) {
+    if (available <= 0) break;
+    await db("eois?on_conflict=event_id,player_id", {
+      method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ event_id: eventId, player_id: waitlisted.player_id, status: "yes", locked_in: false, penalty_amount: 0, updated_at: new Date().toISOString() }),
+    });
+    await db(`event_waitlist?id=eq.${encodeURIComponent(waitlisted.id)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ status: "promoted", promoted_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
+    });
+    available -= 1;
+    promoted += 1;
+  }
+  return promoted;
+}
+
+async function setAdminRole(body) {
+  if (!body.playerId || !["owner", "admin", "treasurer", "scheduler", "scorekeeper", "media"].includes(body.role)) return reply({ error: "Choose a player and valid role." }, 400);
+  await db("admin_roles?on_conflict=player_id", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ player_id: body.playerId, role: body.role, active: body.active !== false, updated_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true });
+}
+
+async function revertAudit(body) {
+  if (!body.auditId) return reply({ error: "Audit entry not found." }, 404);
+  const logs = await db(`audit_logs?id=eq.${encodeURIComponent(body.auditId)}&select=*`);
+  const log = logs?.[0];
+  if (!log?.before_data || !log.target_id) return reply({ error: "This action does not have a reversible snapshot." }, 409);
+  const tableByTarget = { event: "events", match_score: "match_scores", player: "players", tournament: "tournaments", announcement: "announcements" };
+  const table = tableByTarget[log.target_type];
+  if (!table) return reply({ error: "This action type cannot be reverted automatically." }, 409);
+  const { id, ...before } = log.before_data;
+  delete before.created_at;
+  await db(`${table}?id=eq.${encodeURIComponent(log.target_id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(before) });
+  await db(`audit_logs?id=eq.${encodeURIComponent(body.auditId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ reverted_at: new Date().toISOString() }) });
+  return reply({ ok: true });
 }
 
 async function submitEoi(body) {
@@ -813,7 +943,17 @@ async function submitEoi(body) {
       return reply({ error: "New Thursday EOIs close at 12:00 PM on Thursday." }, 409);
     }
     if (body.status === "yes" && current?.status !== "yes" && yesCount >= capacity) {
-      return reply({ error: `This session is full at ${capacity} players. Ask Admin if a place becomes available.` }, 409);
+      const existingWaitlist = await db(`event_waitlist?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}&select=*`);
+      if (!existingWaitlist?.[0] || existingWaitlist[0].status !== "pending") {
+        const positionRows = await db(`event_waitlist?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.pending&select=position&order=position.desc&limit=1`);
+        const position = Number(positionRows?.[0]?.position || 0) + 1;
+        await db("event_waitlist?on_conflict=event_id,player_id", {
+          method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify({ event_id: body.eventId, player_id: body.playerId, position, status: "pending", updated_at: new Date().toISOString() }),
+        });
+        return reply({ ok: true, waitlisted: true, position });
+      }
+      return reply({ ok: true, waitlisted: true, position: existingWaitlist[0].position });
     }
   } else if (now.getTime() >= oldEoiDeadline(event)) {
     return reply({ error: "The EOI deadline has passed." }, 409);
@@ -823,6 +963,13 @@ async function submitEoi(body) {
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
     body: JSON.stringify({ event_id: body.eventId, player_id: body.playerId, status: body.status, updated_at: new Date().toISOString() }),
   });
+  if (body.status === "no") {
+    await db(`event_waitlist?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}&status=eq.pending`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ status: "removed", updated_at: new Date().toISOString() }),
+    });
+  }
+  await promoteWaitlist(body.eventId);
   await maybeGenerateEventSchedule(body.eventId);
   return reply({ ok: true });
 }
@@ -1012,6 +1159,10 @@ async function liveScore(body) {
   const rows = await db(`match_scores?id=eq.${encodeURIComponent(body.scoreId || "")}&select=*`);
   const row = rows?.[0];
   if (!row) return reply({ error: "Scheduled match not found." }, 404);
+  if (body.clientActionId) {
+    const receipts = await db(`score_action_receipts?client_action_id=eq.${encodeURIComponent(body.clientActionId)}&select=client_action_id`);
+    if (receipts?.[0]) return reply({ ok: true, replayed: true });
+  }
   const event = await getEvent(row.event_id);
   if (!event) {
     return reply({ error: "Event not found." }, 404);
@@ -1030,10 +1181,12 @@ async function liveScore(body) {
     const serverId = body.serverPlayerId && [...teamA, ...teamB].includes(body.serverPlayerId) ? body.serverPlayerId : row.server_player_id;
     const serverTeam = serverId && teamA.includes(serverId) ? "A" : serverId && teamB.includes(serverId) ? "B" : row.server_team;
     await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ target_points: target, best_of: bestOf, server_player_id: serverId || null, server_team: serverTeam || null, server_position: body.serverPosition === "left" ? "left" : "right", updated_at: new Date().toISOString() }) });
+    await recordScoreAction(body);
     return reply({ ok: true });
   }
   if (action === "start") {
     await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "live", submitted_by: row.submitted_by || body.playerId, started_at: row.started_at || new Date().toISOString(), updated_at: new Date().toISOString() }) });
+    await recordScoreAction(body);
     return reply({ ok: true });
   }
   if (action === "undo") {
@@ -1041,6 +1194,7 @@ async function liveScore(body) {
     const previous = history.pop();
     if (!previous) return reply({ error: "There is no score to undo." }, 409);
     await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ ...previous, score_history: history, updated_at: new Date().toISOString() }) });
+    await recordScoreAction(body);
     return reply({ ok: true });
   }
   if (!["pointA", "pointB"].includes(action)) return reply({ error: "Unknown live scoring action." }, 400);
@@ -1080,7 +1234,17 @@ async function liveScore(body) {
     }
   }
   await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(patch) });
+  await recordScoreAction(body);
   return reply({ ok: true, completed: patch.status === "completed" });
+}
+
+async function recordScoreAction(body) {
+  if (!body.clientActionId) return;
+  await db("score_action_receipts", {
+    method: "POST",
+    headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify({ client_action_id: String(body.clientActionId), score_id: body.scoreId, player_id: body.playerId, action: body.action }),
+  });
 }
 
 async function adminLogin(body) {
@@ -1253,7 +1417,7 @@ async function playerPin(body) {
 }
 
 async function pushConfig() {
-  return reply({ enabled: configurePush(), publicKey: VAPID_PUBLIC_KEY || null });
+  return reply({ enabled: configurePush(), publicKey: VAPID_PUBLIC_KEY || null, supabaseUrl: SUPABASE_URL || null, supabaseAnonKey: SUPABASE_ANON_KEY || null });
 }
 
 async function savePushSubscription(body) {
@@ -1285,6 +1449,118 @@ async function removePushSubscription(body) {
     method: "DELETE",
     headers: { Prefer: "return=minimal" },
   });
+  return reply({ ok: true });
+}
+
+async function saveNotificationPreferences(body) {
+  if (!body.playerId) return reply({ error: "Player not found." }, 400);
+  const booleanKey = ["eoiReminders", "scheduleChanges", "paymentReminders", "announcements", "tournamentUpdates"];
+  const update = { player_id: body.playerId, updated_at: new Date().toISOString() };
+  for (const key of booleanKey) {
+    if (body[key] !== undefined) update[key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)] = Boolean(body[key]);
+  }
+  for (const key of ["quietHoursStart", "quietHoursEnd"]) {
+    if (body[key] !== undefined) update[key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)] = body[key] || null;
+  }
+  await db("player_notification_preferences?on_conflict=player_id", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(update),
+  });
+  return reply({ ok: true });
+}
+
+async function markAnnouncementRead(body) {
+  if (!body.playerId || !body.announcementId) return reply({ error: "Announcement not found." }, 400);
+  await db("announcement_reads?on_conflict=announcement_id,player_id", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ announcement_id: body.announcementId, player_id: body.playerId, read_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true });
+}
+
+async function createAnnouncement(body) {
+  const title = String(body.title || "").trim();
+  const message = String(body.body || "").trim();
+  if (title.length < 2 || message.length < 2) return reply({ error: "Add a title and message." }, 400);
+  const rows = await db("announcements", {
+    method: "POST", headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ title: title.slice(0, 160), body: message.slice(0, 5000), kind: ["announcement", "message", "alert"].includes(body.kind) ? body.kind : "announcement", pinned: Boolean(body.pinned), created_by: body.playerId || null }),
+  });
+  return reply({ ok: true, announcement: rows?.[0] || null });
+}
+
+async function updateAnnouncement(body) {
+  if (!body.announcementId) return reply({ error: "Announcement not found." }, 404);
+  const update = { updated_at: new Date().toISOString() };
+  if (body.title !== undefined) update.title = String(body.title).trim().slice(0, 160);
+  if (body.body !== undefined) update.body = String(body.body).trim().slice(0, 5000);
+  if (body.kind !== undefined && ["announcement", "message", "alert"].includes(body.kind)) update.kind = body.kind;
+  if (body.pinned !== undefined) update.pinned = Boolean(body.pinned);
+  await db(`announcements?id=eq.${encodeURIComponent(body.announcementId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(update) });
+  return reply({ ok: true });
+}
+
+async function deleteAnnouncement(body) {
+  if (!body.announcementId) return reply({ error: "Announcement not found." }, 404);
+  await db(`announcements?id=eq.${encodeURIComponent(body.announcementId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ archived_at: new Date().toISOString(), updated_at: new Date().toISOString() }) });
+  return reply({ ok: true });
+}
+
+async function registerTournament(body) {
+  if (!body.playerId || !body.tournamentId) return reply({ error: "Tournament or player not found." }, 400);
+  const tournaments = await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}&select=*`);
+  const tournament = tournaments?.[0];
+  if (!tournament) return reply({ error: "Tournament not found." }, 404);
+  if (!["draft", "registration_open"].includes(tournament.status)) return reply({ error: "Registration is closed." }, 409);
+  const existing = await db(`tournament_entries?tournament_id=eq.${encodeURIComponent(body.tournamentId)}&player_id=eq.${encodeURIComponent(body.playerId)}&select=*`);
+  if (existing?.[0]?.status === "registered") return reply({ ok: true, entry: existing[0] });
+  const activeEntries = await db(`tournament_entries?tournament_id=eq.${encodeURIComponent(body.tournamentId)}&status=eq.registered&select=id`);
+  const full = tournament.max_entries && activeEntries.length >= tournament.max_entries;
+  const rows = await db("tournament_entries?on_conflict=tournament_id,player_id", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify({ tournament_id: body.tournamentId, player_id: body.playerId, partner_player_id: body.partnerPlayerId || null, status: full ? "waitlisted" : "registered", updated_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true, waitlisted: full, entry: rows?.[0] || null });
+}
+
+function addMinutesToTime(time, minutes) {
+  const [hours, mins] = String(time || "09:00").split(":").map(Number);
+  const total = hours * 60 + mins + minutes;
+  return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+async function generateTournamentDraw(body) {
+  if (!body.tournamentId) return reply({ error: "Tournament not found." }, 404);
+  const tournaments = await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}&select=*`);
+  const tournament = tournaments?.[0];
+  if (!tournament) return reply({ error: "Tournament not found." }, 404);
+  const entries = await db(`tournament_entries?tournament_id=eq.${encodeURIComponent(body.tournamentId)}&status=eq.registered&order=seed.asc,created_at.asc&select=*`);
+  if (entries.length < 2) return reply({ error: "Register at least two entries before generating a draw." }, 400);
+  await db(`tournament_matches?tournament_id=eq.${encodeURIComponent(body.tournamentId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+  const matches = [];
+  let matchNumber = 1;
+  const start = tournament.start_time || "09:00";
+  for (let left = 0; left < entries.length; left += 1) {
+    for (let right = left + 1; right < entries.length; right += 1) {
+      const slot = matches.length;
+      const courtIndex = slot % Math.max(1, Number(tournament.court_count || 1));
+      const roundIndex = Math.floor(slot / Math.max(1, Number(tournament.court_count || 1)));
+      const startAt = addMinutesToTime(start, roundIndex * (Number(tournament.match_minutes || 12) + Number(tournament.changeover_minutes || 1)));
+      matches.push({ tournament_id: body.tournamentId, round: 1, match_number: matchNumber++, court_name: `Court ${courtIndex + 1}`, scheduled_start: startAt, scheduled_end: addMinutesToTime(startAt, Number(tournament.match_minutes || 12)), team_a_entry_ids: [entries[left].id], team_b_entry_ids: [entries[right].id], target_points: tournament.point_cap || 21, best_of: tournament.best_of || 1 });
+    }
+  }
+  const rows = await db("tournament_matches", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(matches) });
+  await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "in_progress", updated_at: new Date().toISOString() }) });
+  return reply({ ok: true, matches: rows || [] });
+}
+
+async function saveTournamentMatch(body) {
+  if (!body.matchId) return reply({ error: "Tournament match not found." }, 404);
+  const matchRows = await db(`tournament_matches?id=eq.${encodeURIComponent(body.matchId)}&select=*`);
+  const match = matchRows?.[0];
+  if (!match) return reply({ error: "Tournament match not found." }, 404);
+  const gamesA = Number(body.gamesA), gamesB = Number(body.gamesB);
+  if (!Number.isInteger(gamesA) || !Number.isInteger(gamesB) || gamesA < 0 || gamesB < 0 || gamesA === gamesB) return reply({ error: "Enter a winning tournament result." }, 400);
+  await db(`tournament_matches?id=eq.${encodeURIComponent(body.matchId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ games_a: gamesA, games_b: gamesB, game_scores: Array.isArray(body.gameScores) ? body.gameScores : [], status: "completed", updated_at: new Date().toISOString() }) });
   return reply({ ok: true });
 }
 
@@ -1371,6 +1647,7 @@ async function adminSetEoi(body) {
       method: "DELETE", headers: { Prefer: "return=minimal" },
     });
   }
+  await promoteWaitlist(body.eventId);
   return reply({ ok: true });
 }
 
@@ -1601,6 +1878,9 @@ export default async (req) => {
       "save-pairing": body.playerId,
       "push-subscribe": body.playerId,
       "push-unsubscribe": body.playerId,
+      "notification-preferences": body.playerId,
+      "announcement-read": body.playerId,
+      "tournament-register": body.playerId,
     }[action];
     if (req.method === "POST" && playerIdForAction && !isPlayer(req, playerIdForAction)) {
       return audited(req, action, body, async () => reply({ error: "Player PIN required. Please sign in again." }, 401));
@@ -1619,6 +1899,10 @@ export default async (req) => {
     if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body));
     if (req.method === "POST" && action === "push-subscribe") return audited(req, action, body, () => savePushSubscription(body));
     if (req.method === "POST" && action === "push-unsubscribe") return audited(req, action, body, () => removePushSubscription(body));
+    if (req.method === "POST" && action === "notification-preferences") return audited(req, action, body, () => saveNotificationPreferences(body));
+    if (req.method === "POST" && action === "announcement-read") return audited(req, action, body, () => markAnnouncementRead(body));
+    if (req.method === "POST" && action === "tournament-register") return audited(req, action, body, () => registerTournament(body));
+    if (req.method === "GET" && action === "score-state") return reply(await scoreState(url.searchParams.get("eventId")));
     if (req.method === "GET" && action === "admin-state") {
       return audited(req, action, body, async () => {
         if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
@@ -1632,7 +1916,7 @@ export default async (req) => {
       });
     }
 
-    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament"].includes(action)) {
+    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));
@@ -1651,6 +1935,13 @@ export default async (req) => {
     if (action === "admin-delete-score") return audited(req, action, body, () => adminDeleteScore(body));
     if (action === "admin-delete-media") return audited(req, action, body, () => adminDeleteMedia(body));
     if (action === "admin-create-tournament") return audited(req, action, body, () => createTournament(body));
+    if (action === "admin-set-role") return audited(req, action, body, () => setAdminRole(body));
+    if (action === "admin-revert-audit") return audited(req, action, body, () => revertAudit(body));
+    if (action === "admin-create-announcement") return audited(req, action, body, () => createAnnouncement(body));
+    if (action === "admin-update-announcement") return audited(req, action, body, () => updateAnnouncement(body));
+    if (action === "admin-delete-announcement") return audited(req, action, body, () => deleteAnnouncement(body));
+    if (action === "admin-generate-tournament-draw") return audited(req, action, body, () => generateTournamentDraw(body));
+    if (action === "admin-save-tournament-match") return audited(req, action, body, () => saveTournamentMatch(body));
   } catch (error) {
     console.error(error);
     if (error.message === "Server environment variables are not configured.") {

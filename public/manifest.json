@@ -1,0 +1,16 @@
+{
+  "name": "Kingsmen Badminton Club",
+  "short_name": "Kingsmen Badminton",
+  "start_url": "/?page=play",
+  "display": "standalone",
+  "background_color": "#eef3f6",
+  "theme_color": "#173a31",
+  "icons": [
+    {
+      "src": "/assets/kingsmen-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
