@@ -702,7 +702,8 @@ async function appState() {
 }
 
 async function adminState() {
-  return { players: await db("players?select=id,name,active&order=name.asc") };
+  const rows = await db("players?select=id,name,active,pin_hash&order=name.asc");
+  return { players: rows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) })) };
 }
 
 async function submitEoi(body) {
@@ -1172,6 +1173,19 @@ async function removePlayer(body) {
   return reply({ ok: true });
 }
 
+async function resetPlayerPin(body) {
+  const playerId = String(body.playerId || "").trim();
+  if (!playerId) return reply({ error: "Player not found." }, 400);
+  const rows = await db(`players?id=eq.${encodeURIComponent(playerId)}&select=id,name,active`);
+  if (!rows?.[0]) return reply({ error: "Player not found." }, 404);
+  await db(`players?id=eq.${encodeURIComponent(playerId)}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ pin_hash: null }),
+  });
+  return reply({ ok: true, player: { ...rows[0], has_pin: false } });
+}
+
 async function adminSetEoi(body) {
   if (!body.eventId || !body.playerId || !["yes", "no", "none"].includes(body.status)) {
     return reply({ error: "Choose a valid player and EOI status." }, 400);
@@ -1483,7 +1497,7 @@ export default async (req) => {
       return reply(await adminState());
     }
 
-    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament"].includes(action)) {
+    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
@@ -1495,6 +1509,7 @@ export default async (req) => {
     if (action === "admin-add-player") return addPlayer(body);
     if (action === "admin-update-player") return updatePlayer(body);
     if (action === "admin-remove-player") return removePlayer(body);
+    if (action === "admin-reset-player-pin") return resetPlayerPin(body);
     if (action === "admin-set-eoi") return adminSetEoi(body);
     if (action === "admin-set-payment") return adminSetPayment(body);
     if (action === "admin-set-hours") return adminSetPlayerHours(body);
