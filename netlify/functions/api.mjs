@@ -1640,6 +1640,15 @@ async function pushConfig() {
   return reply({ enabled: configurePush(), publicKey: VAPID_PUBLIC_KEY || null, supabaseUrl: SUPABASE_URL || null, supabaseAnonKey: SUPABASE_ANON_KEY || null });
 }
 
+async function pushStatus(body) {
+  const playerId = String(body.playerId || "").trim();
+  if (!playerId) return reply({ configured: configurePush(), subscribed: false });
+  const endpoint = String(body.endpoint || "").trim();
+  const endpointFilter = endpoint ? `&endpoint=eq.${encodeURIComponent(endpoint)}` : "";
+  const rows = await db(`push_subscriptions?player_id=eq.${encodeURIComponent(playerId)}${endpointFilter}&select=id&limit=1`);
+  return reply({ configured: configurePush(), subscribed: Boolean(rows?.length) });
+}
+
 async function savePushSubscription(body) {
   if (!configurePush()) return reply({ error: "Push notifications are not configured yet." }, 503);
   const subscription = body.subscription && typeof body.subscription === "object" ? body.subscription : {};
@@ -2169,6 +2178,7 @@ export default async (req) => {
       "media-finalize": body.playerId,
       "save-pairing": body.playerId,
       "push-subscribe": body.playerId,
+      "push-status": body.playerId,
       "push-unsubscribe": body.playerId,
       "notification-preferences": body.playerId,
       "announcement-read": body.playerId,
@@ -2190,6 +2200,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "add-player") return audited(req, action, body, () => addPlayer(body));
     if (req.method === "POST" && action === "player-pin") return audited(req, action, body, () => playerPin(body));
     if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body));
+    if (req.method === "POST" && action === "push-status") return audited(req, action, body, () => pushStatus(body));
     if (req.method === "POST" && action === "push-subscribe") return audited(req, action, body, () => savePushSubscription(body));
     if (req.method === "POST" && action === "push-unsubscribe") return audited(req, action, body, () => removePushSubscription(body));
     if (req.method === "POST" && action === "notification-preferences") return audited(req, action, body, () => saveNotificationPreferences(body));
