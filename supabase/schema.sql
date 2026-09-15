@@ -215,7 +215,7 @@ on conflict (key) do nothing;
 insert into public.locations (id, name, suburb, timezone)
 values
   ('sydney-sports-club-kings-park', 'Sydney Sports Park - Kings Park', 'Kings Park', 'Australia/Sydney'),
-  ('badmintonworx-norwest', 'BadmintonWorx Norwest', 'Subject to availability', 'Australia/Sydney')
+  ('badmintonworx-norwest', 'BadmintonWorx - Norwest', 'Norwest', 'Australia/Sydney')
 on conflict (id) do nothing;
 
 insert into public.location_court_rates (location_id, day_type, start_minute, end_minute, hourly_rate)

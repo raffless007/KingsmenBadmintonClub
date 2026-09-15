@@ -86,7 +86,7 @@ function locationIdForValues(location, suburb, fallback = null) {
     || locationText === "sydney sports club - kings park"
     || locationText === "sydney sports park - kings park")
     && suburbText === "kings park") return SYDNEY_SPORTS_CLUB_LOCATION_ID;
-  if (locationText === "badmintonworx norwest") return BADMINTONWORX_LOCATION_ID;
+  if (locationText === "badmintonworx norwest" || locationText === "badmintonworx - norwest") return BADMINTONWORX_LOCATION_ID;
   return fallback || null;
 }
 
@@ -194,8 +194,8 @@ function eventDefaults(eventDate) {
   }
   return {
     event_date: eventDate,
-    location: "BadmintonWorx Norwest",
-    suburb: "Subject to availability",
+    location: "BadmintonWorx - Norwest",
+    suburb: "Norwest",
     location_id: BADMINTONWORX_LOCATION_ID,
     court_1_name: "Court 1",
     court_2_name: "Court 2",
