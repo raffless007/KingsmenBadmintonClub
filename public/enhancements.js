@@ -299,7 +299,8 @@
     return "A visitor";
   }
 
-  function auditArea(action) {
+  function auditArea(action, log = {}) {
+    if (action === "admin-view-tab") return `Admin > ${log.details?.tabLabel || log.details?.adminTab || "dashboard"}`;
     const areas = {
       "admin-save-event": "Weekly events",
       "admin-delete-event": "Weekly events",
@@ -352,6 +353,32 @@
     return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : "the updated amount";
   }
 
+  function auditFieldLabel(field) {
+    return String(field).replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+
+  function auditValue(field, value) {
+    if (value === undefined || value === null || value === "") return "not set";
+    if (typeof value === "boolean") return value ? "on" : "off";
+    if (Array.isArray(value)) return value.map((item) => state().players?.some((player) => player.id === item) ? playerName(item) : String(item)).join(" + ") || "none";
+    if (typeof value === "object") return JSON.stringify(value);
+    if (field.endsWith("_fee") || field === "shuttle_fee" || field === "amount") return auditMoney(value);
+    return String(value);
+  }
+
+  function auditDiff(log) {
+    const before = log.before_data || {};
+    const after = log.after_data || {};
+    const fields = Array.isArray(log.details?.changedFields) && log.details.changedFields.length
+      ? log.details.changedFields
+      : Object.keys({ ...before, ...after }).filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]));
+    return fields
+      .filter((field) => !["id", "created_at", "updated_at", "completed_at", "paid_at", "locked_at"].includes(field))
+      .slice(0, 6)
+      .map((field) => `${auditFieldLabel(field)}: ${auditValue(field, before[field])} -> ${auditValue(field, after[field])}`)
+      .join("; ");
+  }
+
   function auditChange(log) {
     const action = log.action || "";
     const details = log.details || {};
@@ -359,7 +386,9 @@
     const fields = Array.isArray(details.changedFields) && details.changedFields.length
       ? ` (${details.changedFields.map((field) => String(field).replaceAll("_", " ")).join(", ")})`
       : "";
-    if (["admin-state", "admin-audit-log"].includes(action)) return "Viewed information; no data was changed.";
+    if (action === "admin-view-tab") return `Viewed the Admin > ${details.tabLabel || details.adminTab || "dashboard"} tab. No data was changed.`;
+    if (action === "admin-audit-log") return "Viewed the Admin > Audit log tab. No data was changed.";
+    if (action === "admin-state") return details.tabLabel ? `Loaded Admin > ${details.tabLabel} data in the background. No data was changed.` : "Loaded Admin dashboard data in the background. No data was changed.";
     if (action === "eoi" || action === "admin-set-eoi") return `Changed ${auditPlayer(details.playerId)}'s attendance response for the ${target} to ${auditStatus(details.status)}.`;
     if (action === "paid" || action === "admin-set-payment") return `Changed ${auditPlayer(details.playerId)}'s payment status for the ${target} to ${details.paid ? "Paid" : "Outstanding"}.`;
     if (action === "shuttle-fee") return `Updated the shuttle fee for the ${target} to ${auditMoney(details.shuttleFee)}.`;
@@ -371,10 +400,10 @@
       return `${liveAction.charAt(0).toUpperCase()}${liveAction.slice(1)} for ${target}.`;
     }
     if (action === "save-pairing") return `Saved the complete player pairing set for the ${target}; the schedule was refreshed.`;
-    if (action === "admin-save-event") return `Updated the event details for the ${target}${fields}.`;
+    if (action === "admin-save-event") return `Updated the event details for the ${target}${auditDiff(log) ? ` Changes: ${auditDiff(log)}.` : fields + "."}`;
     if (action === "admin-delete-event") return `Deleted the upcoming event for the ${target}.`;
     if (action === "admin-generate-schedule") return `Generated a new rotation schedule for the ${target}.`;
-    if (action === "admin-save-match") return `Updated a scheduled matchup for the ${target}${fields}.`;
+    if (action === "admin-save-match") return `Updated a scheduled matchup for the ${target}${auditDiff(log) ? ` Changes: ${auditDiff(log)}.` : fields + "."}`;
     if (action === "admin-delete-score") return `Deleted a recorded match result for the ${target}.`;
     if (action === "admin-create-tournament") return `Created the tournament${details.name ? ` "${details.name}"` : ""}.`;
     if (action === "admin-generate-tournament-draw") return `Generated the tournament draw for ${target}.`;
@@ -403,7 +432,7 @@
   function renderPlainAuditLog(panel, logs) {
     let section = panel.querySelector("#kbcAuditPlainEnglish");
     if (!section) { section = document.createElement("article"); section.id = "kbcAuditPlainEnglish"; section.className = "card kbc-enhancement kbc-audit-log-card"; panel.prepend(section); }
-    section.innerHTML = `<h3>Activity Audit Log</h3><div class="kbc-audit-grid">${logs.slice(0, 50).map((log) => `<div class="kbc-audit-human"><div class="kbc-audit-meta"><strong class="kbc-audit-person">${esc(auditActor(log))}</strong><span class="kbc-chip">${esc(auditRoleLabel(log))}</span><span class="kbc-chip ${log.succeeded ? "" : "danger"}">${log.succeeded ? "Completed" : "Failed"}</span></div><p class="kbc-audit-context"><strong>${esc(auditArea(log.action))}</strong><br>${esc(new Date(log.created_at).toLocaleString("en-AU"))}</p><p class="kbc-audit-change">${esc(auditChange(log))}</p><p><strong>Result:</strong> ${log.succeeded ? "Completed successfully." : `Failed${log.status_code ? ` (${log.status_code})` : ""}.`}</p><details><summary>Technical record</summary><div class="kbc-audit-json"><strong>Action</strong> ${esc(log.action)}<br><strong>Target</strong> ${esc(log.target_type || "-")} ${esc(log.target_id || "")}<br><strong>Details</strong> ${esc(JSON.stringify(log.details || {}, null, 2))}</div></details></div>`).join("")}</div>`;
+    section.innerHTML = `<h3>Activity Audit Log</h3><div class="kbc-audit-grid">${logs.slice(0, 50).map((log) => `<div class="kbc-audit-human"><div class="kbc-audit-meta"><strong class="kbc-audit-person">${esc(auditActor(log))}</strong><span class="kbc-chip">${esc(auditRoleLabel(log))}</span><span class="kbc-chip ${log.succeeded ? "" : "danger"}">${log.succeeded ? "Completed" : "Failed"}</span></div><p class="kbc-audit-context"><strong>${esc(auditArea(log.action, log))}</strong><br>${esc(new Date(log.created_at).toLocaleString("en-AU"))}</p><p class="kbc-audit-change">${esc(auditChange(log))}</p><p><strong>Result:</strong> ${log.succeeded ? "Completed successfully." : `Failed${log.status_code ? ` (${log.status_code})` : ""}.`}</p><details><summary>Technical record</summary><div class="kbc-audit-json"><strong>Action</strong> ${esc(log.action)}<br><strong>Target</strong> ${esc(log.target_type || "-")} ${esc(log.target_id || "")}<br><strong>Details</strong> ${esc(JSON.stringify(log.details || {}, null, 2))}</div></details></div>`).join("")}</div>`;
   }
 
   function renderAuditEnhancements() {
@@ -419,6 +448,11 @@
     section.innerHTML = `<p class="eyebrow">BEFORE AND AFTER</p><h3>Reversible change history</h3><p class="kbc-muted">Use Revert only when the earlier value should be restored.</p><div class="kbc-list">${reversible.length ? reversible.map((log) => `<div class="kbc-list-row"><div><strong>${esc(log.action)}</strong><p class="kbc-muted">${esc(log.target_type)} · ${new Date(log.created_at).toLocaleString("en-AU")}</p><details><summary>View snapshot</summary><div class="kbc-audit-json"><strong>Before</strong> ${esc(JSON.stringify(log.before_data, null, 2))}<br><strong>After</strong> ${esc(JSON.stringify(log.after_data, null, 2))}</div></details></div><button class="secondary kbc-delete" data-kbc-revert="${log.id}">Revert</button></div>`).join("") : `<p class="kbc-muted">No reversible changes are available.</p>`}</div>`;
     panel.appendChild(section);
     section.querySelectorAll("[data-kbc-revert]").forEach((button) => button.onclick = async () => { if (!confirm("Restore the before snapshot for this action?")) return; try { await request()("admin-revert-audit", "POST", { auditId: button.dataset.kbcRevert }, true); notify("Change reverted"); refresh(); } catch (error) { notify(error.message); } });
+  }
+
+  async function logAdminTabView(tab) {
+    if (!tab || !adminToken()) return;
+    try { await request()("admin-view-tab", "POST", { adminTab: tab }, true); } catch { /* Audit telemetry must never interrupt navigation. */ }
   }
 
   function enhanceRender() {
@@ -444,7 +478,11 @@
     if (enhancement.installed) return;
     enhancement.installed = true;
     window.addEventListener("kbc-audit-updated", () => setTimeout(renderAuditEnhancements, 0));
-    document.addEventListener("click", (event) => { if (event.target.closest("[data-page], [data-tab]")) setTimeout(enhanceRender, 0); });
+    document.addEventListener("click", (event) => {
+      const tab = event.target.closest("[data-tab]");
+      if (tab) logAdminTabView(tab.dataset.tab);
+      if (event.target.closest("[data-page], [data-tab]")) setTimeout(enhanceRender, 0);
+    });
     enhancement.originalRender = evalGlobal("render");
     if (enhancement.originalRender) {
       const wrapped = function () { enhancement.originalRender.apply(this, arguments); setTimeout(enhanceRender, 0); };

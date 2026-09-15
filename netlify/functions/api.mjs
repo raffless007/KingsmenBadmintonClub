@@ -176,6 +176,7 @@ function auditDetails(body) {
     "courtName", "scheduledStart", "scheduledEnd", "mode", "fileName", "action",
     "announcementId", "matchId", "locationId", "role", "partnerPlayerId", "position",
     "courtCount", "matchMinutes", "changeoverMinutes", "entryFee", "kind", "title",
+    "adminTab", "tab", "tabLabel",
   ];
   for (const key of scalarKeys) {
     if (body[key] !== undefined && body[key] !== null && body[key] !== "") details[key] = body[key];
@@ -193,6 +194,13 @@ function auditDetails(body) {
   return details;
 }
 
+function snapshotChangedFields(before, after) {
+  if (!before || !after || typeof before !== "object" || typeof after !== "object") return [];
+  const ignored = new Set(["id", "created_at", "updated_at", "completed_at", "paid_at", "locked_at"]);
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter(key => !ignored.has(key) && JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+}
+
 async function writeAuditLog({ req, action, body, response, failed = false }) {
   const actor = auditActor(req, action, body);
   const target = auditTarget(action, body);
@@ -205,6 +213,8 @@ async function writeAuditLog({ req, action, body, response, failed = false }) {
       adminIdentity: session.playerId ? "player-pin" : verifiedPlayer ? "shared-passcode-with-player-session" : "shared-passcode",
     } : {}),
   };
+  const changedFields = snapshotChangedFields(body.__auditBefore, body.__auditAfter);
+  if (changedFields.length) details.changedFields = changedFields.slice(0, 40);
   try {
     await db("audit_logs", {
       method: "POST",
@@ -253,6 +263,9 @@ async function auditSnapshot(action, body) {
     } else if (body.eventId && ["admin-save-event", "admin-delete-event"].includes(action)) {
       table = "events";
       query = `id=eq.${encodeURIComponent(body.eventId)}&select=*`;
+    } else if (body.eventId && body.playerId && action === "admin-set-hours") {
+      table = "event_player_hours";
+      query = `event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}&select=*`;
     } else if (body.scoreId) {
       table = "match_scores";
       query = `id=eq.${encodeURIComponent(body.scoreId)}&select=*`;
@@ -925,6 +938,26 @@ async function adminAuditLog() {
   ]);
   const names = new Map((players || []).map(player => [String(player.id), player.name]));
   return { logs: (Array.isArray(logs) ? logs : []).map(log => ({ ...log, actor_name: log.actor_id ? names.get(String(log.actor_id)) || null : null })) };
+}
+
+const ADMIN_TAB_LABELS = {
+  events: "Weekly events",
+  schedule: "Schedule",
+  eois: "EOI manager",
+  roster: "Player roster",
+  money: "Payment tracking",
+  adminScores: "Scores",
+  auditLog: "Audit log",
+  settings: "Settings",
+};
+
+async function adminViewTab(body) {
+  const tab = String(body.adminTab || body.tab || "");
+  const tabLabel = ADMIN_TAB_LABELS[tab];
+  if (!tabLabel) return reply({ error: "Unknown Admin tab." }, 400);
+  body.adminTab = tab;
+  body.tabLabel = tabLabel;
+  return reply({ ok: true });
 }
 
 async function scoreState(eventId) {
@@ -2046,7 +2079,7 @@ export default async (req) => {
       });
     }
 
-    if (!["admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
+    if (!["admin-view-tab", "admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));
@@ -2059,6 +2092,7 @@ export default async (req) => {
       "admin-generate-tournament-draw": "tournaments", "admin-save-tournament-match": "scores", "admin-create-announcement": "announcements", "admin-update-announcement": "announcements", "admin-delete-announcement": "announcements", "admin-set-role": "roles", "admin-create-role": "roles", "admin-update-role": "roles", "admin-delete-role": "roles", "admin-revert-audit": "audit", "admin-delete-media": "media",
     }[action];
     if (permissionForAction && !await hasAdminPermission(req, permissionForAction)) return audited(req, action, body, async () => reply({ error: "Your admin role does not have permission for this action." }, 403));
+    if (action === "admin-view-tab") return audited(req, action, body, () => adminViewTab(body));
     if (action === "admin-change-passcode") return audited(req, action, body, () => changePasscode(body));
     if (action === "admin-save-event") return audited(req, action, body, () => saveEvent(body));
     if (action === "admin-generate-schedule") return audited(req, action, body, async () => reply(await generateEventSchedule(body.eventId)));
