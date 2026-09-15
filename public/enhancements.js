@@ -294,8 +294,8 @@
   }
 
   function auditActor(log) {
-    if (log.actor_type === "admin") return log.actor_id ? playerName(log.actor_id) : "Owner (shared passcode)";
-    if (log.actor_type === "player") return playerName(log.actor_id);
+    if (log.actor_type === "admin") return log.actor_name || (log.actor_id ? playerName(log.actor_id) : "Owner (shared passcode)");
+    if (log.actor_type === "player") return log.actor_name || playerName(log.actor_id);
     return "A visitor";
   }
 

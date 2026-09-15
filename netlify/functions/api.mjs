@@ -153,8 +153,8 @@ async function db(path, options = {}) {
 }
 
 function auditActor(req, action, body) {
-  if (action === "admin-login") return { type: "admin", id: body.__adminActorId || (body.playerPin && body.playerId ? String(body.playerId) : null) };
-  if (isAdmin(req)) return { type: "admin", id: adminSession(req)?.playerId || null };
+  if (action === "admin-login") return { type: "admin", id: body.__adminActorId || playerSession(req)?.playerId || (body.playerPin && body.playerId ? String(body.playerId) : null) };
+  if (isAdmin(req)) return { type: "admin", id: adminSession(req)?.playerId || playerSession(req)?.playerId || null };
   const playerId = body.playerId || body.submittedBy || (action === "player-pin" ? body.playerId : null);
   return playerId ? { type: "player", id: String(playerId) } : { type: "anonymous", id: null };
 }
@@ -197,9 +197,13 @@ async function writeAuditLog({ req, action, body, response, failed = false }) {
   const actor = auditActor(req, action, body);
   const target = auditTarget(action, body);
   const session = isAdmin(req) ? adminSession(req) : null;
+  const verifiedPlayer = playerSession(req);
   const details = {
     ...auditDetails(body),
-    ...(session ? { adminRole: session.role, adminIdentity: session.playerId ? "player-pin" : "shared-passcode" } : {}),
+    ...(session ? {
+      adminRole: session.role,
+      adminIdentity: session.playerId ? "player-pin" : verifiedPlayer ? "shared-passcode-with-player-session" : "shared-passcode",
+    } : {}),
   };
   try {
     await db("audit_logs", {
@@ -778,16 +782,25 @@ function signPlayerSession(playerId) {
   return `${payload}.${signature}`;
 }
 
-function isPlayer(req, playerId) {
-  const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  const [payload, signature] = token.split(".");
-  if (!payload || !signature) return false;
+function sessionFromToken(token) {
+  const [payload, signature] = String(token || "").split(".");
+  if (!payload || !signature) return null;
   const expected = createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
-  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
   try {
     const session = JSON.parse(Buffer.from(payload, "base64url").toString());
-    return session.kind === "player" && session.playerId === playerId && session.exp > Date.now();
-  } catch { return false; }
+    return session.exp > Date.now() ? session : null;
+  } catch { return null; }
+}
+
+function playerSession(req) {
+  const tokens = [req.headers.get("x-kbc-player-authorization"), req.headers.get("authorization")]
+    .filter(Boolean).map(value => String(value).replace(/^Bearer\s+/i, ""));
+  return tokens.map(sessionFromToken).find(session => session?.kind === "player") || null;
+}
+
+function isPlayer(req, playerId) {
+  return playerSession(req)?.playerId === playerId;
 }
 
 function isAdmin(req) {
@@ -906,8 +919,12 @@ async function adminState(req) {
 }
 
 async function adminAuditLog() {
-  const logs = await db("audit_logs?select=id,created_at,actor_type,actor_id,action,target_type,target_id,status_code,succeeded,details,before_data,after_data,reverted_at,reverted_by&order=created_at.desc&limit=200");
-  return { logs: Array.isArray(logs) ? logs : [] };
+  const [logs, players] = await Promise.all([
+    db("audit_logs?select=id,created_at,actor_type,actor_id,action,target_type,target_id,status_code,succeeded,details,before_data,after_data,reverted_at,reverted_by&order=created_at.desc&limit=200"),
+    db("players?select=id,name"),
+  ]);
+  const names = new Map((players || []).map(player => [String(player.id), player.name]));
+  return { logs: (Array.isArray(logs) ? logs : []).map(log => ({ ...log, actor_name: log.actor_id ? names.get(String(log.actor_id)) || null : null })) };
 }
 
 async function scoreState(eventId) {
@@ -1365,7 +1382,7 @@ async function adminLogin(body, req) {
     stored = await getPasscodeSetting();
   }
   if (!verifyPasscode(body.passcode, stored)) return reply({ error: "Incorrect passcode." }, 401);
-  body.__adminActorId = body.playerId && req && isPlayer(req, body.playerId) ? String(body.playerId) : null;
+  body.__adminActorId = playerSession(req)?.playerId || (body.playerId && req && isPlayer(req, body.playerId) ? String(body.playerId) : null);
   body.__adminRole = "owner";
   body.__adminIdentity = "shared-passcode";
   return reply({ ok: true, role: "owner", token: signAdminSession("owner", body.__adminActorId) });
