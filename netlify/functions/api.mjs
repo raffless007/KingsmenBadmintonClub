@@ -976,7 +976,8 @@ async function savePairing(body) {
   if (new Set(allPlayers).size !== allPlayers.length) return reply({ error: "Each attendee can only appear in one pairing. Make all changes, then save the full set." }, 400);
   await saveEventPairings(eventId, pairings);
   const schedule = await generateEventSchedule(eventId, { force: true });
-  return reply({ ok: true, updated: pairings.length, scheduleUpdated: schedule.saved });
+  const scores = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=*&order=match_number.asc`);
+  return reply({ ok: true, updated: pairings.length, pairings, scores, scheduleUpdated: schedule.saved });
 }
 
 async function deleteEvent(body) {
