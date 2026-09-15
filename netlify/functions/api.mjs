@@ -175,7 +175,7 @@ function auditDetails(body) {
     "eventId", "playerId", "submittedBy", "scoreId", "tournamentId", "mediaId",
     "status", "paid", "hoursPlayed", "shuttleFee", "targetPoints", "bestOf",
     "courtName", "scheduledStart", "scheduledEnd", "mode", "fileName", "action",
-    "announcementId", "matchId", "locationId", "role", "partnerPlayerId", "position",
+    "announcementId", "matchId", "locationId", "role", "partnerPlayerId", "position", "urgent", "audience", "targetPlayerCount",
     "courtCount", "matchMinutes", "changeoverMinutes", "entryFee", "kind", "title",
     "adminTab", "tab", "tabLabel", "page", "pageLabel", "section", "sectionLabel",
   ];
@@ -902,7 +902,7 @@ async function savePasscode(passcode) {
   });
 }
 
-async function appState() {
+async function appState(req) {
   await ensureUpcomingEvents();
   await maintainThursdaySessions();
   const [playerRows, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements, tournamentEntries, tournamentMatches] = await Promise.all([
@@ -929,7 +929,10 @@ async function appState() {
     const value = rows?.[0]?.value;
     try { return [event.id, value ? JSON.parse(value) : null]; } catch { return [event.id, null]; }
   })));
-  return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements, tournamentEntries, tournamentMatches, serverNow: new Date().toISOString() };
+  const currentPlayerId = playerSession(req)?.playerId;
+  const visibleAnnouncements = (announcements || []).filter((announcement) => announcement.audience !== "attendees"
+    || (currentPlayerId && eois.some((eoi) => eoi.event_id === announcement.event_id && eoi.player_id === currentPlayerId && eoi.status === "yes")));
+  return { players, events, eois, payments, scores, media, playerHours, eventPairings, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements: visibleAnnouncements, tournamentEntries, tournamentMatches, serverNow: new Date().toISOString() };
 }
 
 async function adminState(req) {
@@ -1693,7 +1696,7 @@ async function markAnnouncementRead(body) {
   return reply({ ok: true });
 }
 
-async function sendAnnouncementPush(announcement) {
+async function sendAnnouncementPush(announcement, targetPlayerIds = null) {
   if (!configurePush()) return { configured: false, sent: 0, failed: 0, skipped: 0 };
   try {
     const [subscriptions, preferences] = await Promise.all([
@@ -1701,7 +1704,11 @@ async function sendAnnouncementPush(announcement) {
       db("player_notification_preferences?select=player_id,announcements"),
     ]);
     const announcementsEnabled = new Map((preferences || []).map((row) => [row.player_id, row.announcements !== false]));
-    const eligible = (subscriptions || []).filter((subscription) => announcementsEnabled.get(subscription.player_id) !== false);
+    const target = targetPlayerIds ? new Set(targetPlayerIds.map(String)) : null;
+    const eligible = (subscriptions || []).filter((subscription) => {
+      if (target) return target.has(String(subscription.player_id));
+      return announcementsEnabled.get(subscription.player_id) !== false;
+    });
     const payload = JSON.stringify({
       title: announcement.title,
       body: announcement.body,
@@ -1709,6 +1716,7 @@ async function sendAnnouncementPush(announcement) {
       url: "/?page=play",
       announcementId: announcement.id,
       kind: announcement.kind,
+      urgent: Boolean(announcement.urgent),
     });
     let sent = 0;
     let failed = 0;
@@ -1732,7 +1740,7 @@ async function sendAnnouncementPush(announcement) {
         }
       }
     }));
-    return { configured: true, sent, failed, skipped: (subscriptions || []).length - eligible.length };
+    return { configured: true, sent, failed, skipped: (subscriptions || []).length - eligible.length, targetCount: target?.size || null };
   } catch (error) {
     console.error("Announcement push lookup failed", error);
     return { configured: true, sent: 0, failed: 1, skipped: 0 };
@@ -1744,14 +1752,26 @@ async function createAnnouncement(body) {
   const message = String(body.body || "").trim();
   if (title.length < 2 || message.length < 2) return reply({ error: "Add a title and message." }, 400);
   const kind = ["announcement", "message", "alert"].includes(body.kind) ? body.kind : "announcement";
+  const urgent = Boolean(body.urgent);
+  const eventId = urgent ? String(body.eventId || "").trim() : null;
+  if (urgent && kind !== "alert") return reply({ error: "Urgent attendee alerts must use the Alert type." }, 400);
+  if (urgent && !eventId) return reply({ error: "Choose the session this urgent alert is for." }, 400);
+  let targetPlayerIds = null;
+  if (urgent) {
+    const eventRows = await db(`events?id=eq.${encodeURIComponent(eventId)}&select=id`);
+    if (!eventRows?.[0]) return reply({ error: "That session could not be found." }, 404);
+    const attendees = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
+    targetPlayerIds = attendees.map((row) => row.player_id);
+  }
   const rows = await db("announcements", {
     method: "POST", headers: { Prefer: "return=representation" },
-    body: JSON.stringify({ title: title.slice(0, 160), body: message.slice(0, 5000), kind, pinned: Boolean(body.pinned), created_by: body.playerId || null }),
+    body: JSON.stringify({ title: title.slice(0, 160), body: message.slice(0, 5000), kind, pinned: Boolean(body.pinned) || urgent, urgent, audience: urgent ? "attendees" : "all", event_id: eventId, created_by: body.playerId || null }),
   });
   const announcement = rows?.[0] || null;
   const delivery = kind === "alert" && announcement
-    ? await sendAnnouncementPush(announcement)
-    : { configured: false, sent: 0, failed: 0, skipped: 0 };
+    ? await sendAnnouncementPush(announcement, targetPlayerIds)
+    : { configured: false, sent: 0, failed: 0, skipped: 0, targetCount: targetPlayerIds?.length || null };
+  body.targetPlayerCount = targetPlayerIds?.length || 0;
   body.__pushDelivery = delivery;
   return reply({ ok: true, announcement, delivery });
 }
@@ -1763,6 +1783,9 @@ async function updateAnnouncement(body) {
   if (body.body !== undefined) update.body = String(body.body).trim().slice(0, 5000);
   if (body.kind !== undefined && ["announcement", "message", "alert"].includes(body.kind)) update.kind = body.kind;
   if (body.pinned !== undefined) update.pinned = Boolean(body.pinned);
+  if (body.urgent !== undefined) update.urgent = Boolean(body.urgent);
+  if (body.audience !== undefined && ["all", "attendees"].includes(body.audience)) update.audience = body.audience;
+  if (body.eventId !== undefined) update.event_id = String(body.eventId || "").trim() || null;
   await db(`announcements?id=eq.${encodeURIComponent(body.announcementId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(update) });
   return reply({ ok: true });
 }
@@ -2133,7 +2156,7 @@ export default async (req) => {
     const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
 
     if (req.method === "GET" && action === "push-config") return pushConfig();
-    if (req.method === "GET" && action === "state") return reply(await appState());
+    if (req.method === "GET" && action === "state") return reply(await appState(req));
     const playerIdForAction = {
       eoi: body.playerId,
       paid: body.playerId,

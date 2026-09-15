@@ -21,6 +21,8 @@ self.addEventListener("push", event => {
     icon: "/assets/kingsmen-logo.png",
     badge: "/assets/kingsmen-logo.png",
     tag: data.tag || "kingsmen-update",
+    renotify: Boolean(data.urgent),
+    requireInteraction: Boolean(data.urgent),
     data: { url: data.url || "/" },
   }));
 });
