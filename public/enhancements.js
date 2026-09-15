@@ -431,8 +431,17 @@
 
   function renderPlainAuditLog(panel, logs) {
     let section = panel.querySelector("#kbcAuditPlainEnglish");
-    if (!section) { section = document.createElement("article"); section.id = "kbcAuditPlainEnglish"; section.className = "card kbc-enhancement kbc-audit-log-card"; panel.prepend(section); }
-    section.innerHTML = `<h3>Activity Audit Log</h3><div class="kbc-audit-grid">${logs.slice(0, 50).map((log) => `<div class="kbc-audit-human"><div class="kbc-audit-meta"><strong class="kbc-audit-person">${esc(auditActor(log))}</strong><span class="kbc-chip">${esc(auditRoleLabel(log))}</span><span class="kbc-chip ${log.succeeded ? "" : "danger"}">${log.succeeded ? "Completed" : "Failed"}</span></div><p class="kbc-audit-context"><strong>${esc(auditArea(log.action, log))}</strong><br>${esc(new Date(log.created_at).toLocaleString("en-AU"))}</p><p class="kbc-audit-change">${esc(auditChange(log))}</p><p><strong>Result:</strong> ${log.succeeded ? "Completed successfully." : `Failed${log.status_code ? ` (${log.status_code})` : ""}.`}</p><details><summary>Technical record</summary><div class="kbc-audit-json"><strong>Action</strong> ${esc(log.action)}<br><strong>Target</strong> ${esc(log.target_type || "-")} ${esc(log.target_id || "")}<br><strong>Details</strong> ${esc(JSON.stringify(log.details || {}, null, 2))}</div></details></div>`).join("")}</div>`;
+    if (!section) {
+      section = panel.querySelector(".admincard");
+      if (section) section.id = "kbcAuditPlainEnglish";
+      else { section = document.createElement("article"); section.id = "kbcAuditPlainEnglish"; panel.prepend(section); }
+      section.classList.add("card", "kbc-enhancement", "kbc-audit-log-card");
+    }
+    const expanded = section.dataset.expanded === "true";
+    const visibleLogs = expanded ? logs : logs.slice(0, 12);
+    section.innerHTML = `<div class="cardhead"><div><p class="eyebrow">ADMIN ONLY</p><h3>Activity Audit Log</h3><p>Recent Admin views and changes, with the exact area and result.</p></div><button id="refreshAuditLog" class="secondary">Refresh</button></div><div class="kbc-audit-grid">${visibleLogs.map((log) => `<div class="kbc-audit-human"><div class="kbc-audit-meta"><strong class="kbc-audit-person">${esc(auditActor(log))}</strong><span class="kbc-chip">${esc(auditRoleLabel(log))}</span><span class="kbc-chip ${log.succeeded ? "" : "danger"}">${log.succeeded ? "Completed" : "Failed"}</span></div><p class="kbc-audit-context"><strong>${esc(auditArea(log.action, log))}</strong><br>${esc(new Date(log.created_at).toLocaleString("en-AU"))}</p><p class="kbc-audit-change">${esc(auditChange(log))}</p><p><strong>Result:</strong> ${log.succeeded ? "Completed successfully." : `Failed${log.status_code ? ` (${log.status_code})` : ""}.`}</p><details><summary>Technical record</summary><div class="kbc-audit-json"><strong>Action</strong> ${esc(log.action)}<br><strong>Target</strong> ${esc(log.target_type || "-")} ${esc(log.target_id || "")}<br><strong>Details</strong> ${esc(JSON.stringify(log.details || {}, null, 2))}</div></details></div>`).join("")}</div>${logs.length > 12 ? `<div class="actions"><button id="kbcAuditViewMore" class="secondary">${expanded ? "Show Less" : `View More (${logs.length - 12} older)`}</button></div>` : ""}`;
+    section.querySelector("#refreshAuditLog")?.addEventListener("click", () => evalGlobal("loadAdminAuditLog")?.());
+    section.querySelector("#kbcAuditViewMore")?.addEventListener("click", () => { section.dataset.expanded = expanded ? "false" : "true"; renderPlainAuditLog(panel, logs); });
   }
 
   function renderAuditEnhancements() {
