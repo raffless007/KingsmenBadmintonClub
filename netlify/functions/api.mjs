@@ -936,12 +936,13 @@ async function appState(req) {
 }
 
 async function adminState(req) {
-  const [rows, roles, roleDefinitions, subscriptions, preferences] = await Promise.all([
+  const [rows, roles, roleDefinitions, subscriptions, preferences, announcements] = await Promise.all([
     db("players?select=id,name,active,pin_hash&order=name.asc"),
     db("admin_roles?select=*&order=role,player_id"),
     db("admin_role_definitions?select=*&order=is_system.desc,name.asc"),
     db("push_subscriptions?select=player_id,last_seen_at&order=last_seen_at.desc"),
     db("player_notification_preferences?select=player_id,announcements"),
+    db("announcements?select=*&archived_at=is.null&order=created_at.desc"),
   ]);
   const currentRole = adminRole(req);
   const preferenceByPlayer = new Map((preferences || []).map(row => [String(row.player_id), row]));
@@ -965,7 +966,7 @@ async function adminState(req) {
       alerts_ready: devices.count > 0 && announcements,
     };
   });
-  return { players, roles: roles || [], roleDefinitions: roleDefinitions || [], currentRole, permissions: [...await adminPermissionSet(currentRole)], canManageRoles: currentRole === "owner" };
+  return { players, roles: roles || [], roleDefinitions: roleDefinitions || [], announcements: announcements || [], currentRole, permissions: [...await adminPermissionSet(currentRole)], canManageRoles: currentRole === "owner" };
 }
 
 async function adminAuditLog() {
