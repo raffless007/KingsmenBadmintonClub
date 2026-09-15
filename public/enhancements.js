@@ -368,6 +368,7 @@
   function install() {
     if (enhancement.installed) return;
     enhancement.installed = true;
+    window.addEventListener("kbc-audit-updated", () => setTimeout(renderAuditEnhancements, 0));
     enhancement.originalRender = evalGlobal("render");
     if (enhancement.originalRender) {
       const wrapped = function () { enhancement.originalRender.apply(this, arguments); setTimeout(enhanceRender, 0); };
