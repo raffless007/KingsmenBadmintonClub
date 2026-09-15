@@ -925,11 +925,36 @@ async function appState() {
 }
 
 async function adminState(req) {
-  const rows = await db("players?select=id,name,active,pin_hash&order=name.asc");
-  const roles = await db("admin_roles?select=*&order=role,player_id");
-  const roleDefinitions = await db("admin_role_definitions?select=*&order=is_system.desc,name.asc");
+  const [rows, roles, roleDefinitions, subscriptions, preferences] = await Promise.all([
+    db("players?select=id,name,active,pin_hash&order=name.asc"),
+    db("admin_roles?select=*&order=role,player_id"),
+    db("admin_role_definitions?select=*&order=is_system.desc,name.asc"),
+    db("push_subscriptions?select=player_id,last_seen_at&order=last_seen_at.desc"),
+    db("player_notification_preferences?select=player_id,announcements"),
+  ]);
   const currentRole = adminRole(req);
-  return { players: rows.map(({ pin_hash, ...player }) => ({ ...player, has_pin: Boolean(pin_hash) })), roles: roles || [], roleDefinitions: roleDefinitions || [], currentRole, permissions: [...await adminPermissionSet(currentRole)], canManageRoles: currentRole === "owner" };
+  const preferenceByPlayer = new Map((preferences || []).map(row => [String(row.player_id), row]));
+  const deviceByPlayer = new Map();
+  for (const subscription of subscriptions || []) {
+    const key = String(subscription.player_id);
+    const current = deviceByPlayer.get(key) || { count: 0, lastSeenAt: null };
+    current.count += 1;
+    if (!current.lastSeenAt || String(subscription.last_seen_at) > current.lastSeenAt) current.lastSeenAt = subscription.last_seen_at;
+    deviceByPlayer.set(key, current);
+  }
+  const players = rows.map(({ pin_hash, ...player }) => {
+    const devices = deviceByPlayer.get(String(player.id)) || { count: 0, lastSeenAt: null };
+    const announcements = preferenceByPlayer.get(String(player.id))?.announcements !== false;
+    return {
+      ...player,
+      has_pin: Boolean(pin_hash),
+      push_device_count: devices.count,
+      push_last_seen_at: devices.lastSeenAt,
+      announcement_alerts_enabled: announcements,
+      alerts_ready: devices.count > 0 && announcements,
+    };
+  });
+  return { players, roles: roles || [], roleDefinitions: roleDefinitions || [], currentRole, permissions: [...await adminPermissionSet(currentRole)], canManageRoles: currentRole === "owner" };
 }
 
 async function adminAuditLog() {
