@@ -982,6 +982,7 @@ const ADMIN_TAB_LABELS = {
   money: "Payment tracking",
   adminScores: "Scores",
   auditLog: "Audit log",
+  communications: "Communications",
   settings: "Settings",
 };
 

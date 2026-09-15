@@ -204,14 +204,23 @@
 
   function renderAdminEnhancements() {
     if (!adminToken()) return;
-    const panel = $("settingsPanel");
-    if (!panel || panel.querySelector("#kbcAdminTools")) return;
-    const tools = document.createElement("article");
-    tools.id = "kbcAdminTools";
-    tools.className = "card kbc-admin-tools";
-    tools.innerHTML = `<div><p class="eyebrow">ADMIN SETTINGS</p><h3>Club updates and admin access</h3><p class="kbc-muted">Publish announcements, create custom roles, choose their app permissions, and assign them to players. The shared admin passcode remains the owner session.</p></div><form id="kbcAnnouncementForm"><div class="formgrid"><label><span class="label">TITLE</span><input class="control" name="title" required maxlength="160" placeholder="Thursday court update"></label><label><span class="label">TYPE</span><select class="control" name="kind"><option value="announcement">Announcement</option><option value="message">Message</option><option value="alert">Alert</option></select></label><label class="full"><span class="label">MESSAGE</span><textarea class="control" name="body" required maxlength="5000" placeholder="Write the note players should see."></textarea></label><label><span class="label">PIN TO TOP</span><input type="checkbox" name="pinned"></label></div><div class="actions"><button class="primary">Publish update</button></div></form><div><p class="eyebrow">ADMIN ROLES</p><div id="kbcRoles"></div></div>`;
-    panel.appendChild(tools);
-    $("kbcAnnouncementForm").onsubmit = async (event) => { event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement); try { const result = await request()("admin-create-announcement", "POST", { title: form.get("title"), body: form.get("body"), kind: form.get("kind"), pinned: form.get("pinned") === "on" }, true); const delivery = result.delivery; if (form.get("kind") === "alert") { if (!delivery?.configured) notify("Alert published in the app. Push notifications are not configured."); else if (delivery.failed) notify(`Alert published. Sent to ${delivery.sent} device${delivery.sent === 1 ? "" : "s"}; ${delivery.failed} failed.`); else if (delivery.sent) notify(`Alert sent to ${delivery.sent} device${delivery.sent === 1 ? "" : "s"}.`); else notify("Alert published, but no players have push notifications enabled."); } else notify("Announcement published"); formElement.reset(); refresh(); } catch (error) { notify(error.message); } };
+    const communications = $("communicationsPanel");
+    if (communications && !communications.querySelector("#kbcAdminCommunications")) {
+      const tools = document.createElement("article");
+      tools.id = "kbcAdminCommunications";
+      tools.className = "card kbc-admin-tools";
+      tools.innerHTML = `<div><p class="eyebrow">ADMIN COMMUNICATIONS</p><h3>Send an alert, message, or announcement</h3><p class="kbc-muted">Publish a club update for everyone. Alerts also send a push notification to players who have enabled announcements on their device.</p></div><form id="kbcAnnouncementForm"><div class="formgrid"><label><span class="label">TITLE</span><input class="control" name="title" required maxlength="160" placeholder="Thursday court update"></label><label><span class="label">TYPE</span><select class="control" name="kind"><option value="announcement">Announcement</option><option value="message">Message</option><option value="alert">Alert</option></select></label><label class="full"><span class="label">MESSAGE</span><textarea class="control" name="body" required maxlength="5000" placeholder="Write the note players should see."></textarea></label><label><span class="label">PIN TO TOP</span><input type="checkbox" name="pinned"></label></div><div class="actions"><button class="primary">Publish update</button></div></form>`;
+      communications.appendChild(tools);
+      $("kbcAnnouncementForm").onsubmit = async (event) => { event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement); try { const result = await request()("admin-create-announcement", "POST", { title: form.get("title"), body: form.get("body"), kind: form.get("kind"), pinned: form.get("pinned") === "on" }, true); const delivery = result.delivery; if (form.get("kind") === "alert") { if (!delivery?.configured) notify("Alert published in the app. Push notifications are not configured."); else if (delivery.failed) notify(`Alert published. Sent to ${delivery.sent} device${delivery.sent === 1 ? "" : "s"}; ${delivery.failed} failed.`); else if (delivery.sent) notify(`Alert sent to ${delivery.sent} device${delivery.sent === 1 ? "" : "s"}.`); else notify("Alert published, but no players have push notifications enabled."); } else notify("Announcement published"); formElement.reset(); refresh(); } catch (error) { notify(error.message); } };
+    }
+    const settings = $("settingsPanel");
+    if (settings && !settings.querySelector("#kbcAdminAccess")) {
+      const access = document.createElement("article");
+      access.id = "kbcAdminAccess";
+      access.className = "card kbc-admin-tools";
+      access.innerHTML = `<div><p class="eyebrow">ADMIN ROLES</p><h3>Admin access and permissions</h3><p class="kbc-muted">Create roles, choose their app permissions, and assign them to players.</p></div><div id="kbcRoles"></div>`;
+      settings.appendChild(access);
+    }
     renderAdminRoles();
   }
 
@@ -241,8 +250,8 @@
         ["media", "Media"], ["tournaments", "Tournaments"], ["announcements", "Announcements"], ["roles", "Admin roles"], ["audit", "Audit log"],
       ];
       document.querySelectorAll("[data-tab]").forEach((button) => {
-        const permission = { events: "events", schedule: "schedule", eois: "eoi", roster: "roster", money: "money", adminScores: "scores", auditLog: "audit", settings: "roles" }[button.dataset.tab];
-        const allowed = button.dataset.tab === "settings" ? (canManage || result.permissions?.includes("announcements")) : !permission || result.permissions?.includes(permission);
+        const permission = { events: "events", schedule: "schedule", eois: "eoi", roster: "roster", money: "money", adminScores: "scores", auditLog: "audit", communications: "announcements", settings: "roles" }[button.dataset.tab];
+        const allowed = button.dataset.tab === "settings" ? canManage : !permission || result.permissions?.includes(permission);
         button.style.display = allowed ? "" : "none";
         const panel = $(`${button.dataset.tab}Panel`);
         if (panel && !allowed) panel.classList.remove("active");
