@@ -963,50 +963,20 @@ async function adminSaveMatch(body) {
 async function savePairing(body) {
   const eventId = String(body.eventId || "");
   const playerId = String(body.playerId || "");
-  const oldPlayers = Array.isArray(body.oldPlayers) ? body.oldPlayers.filter(Boolean) : [];
-  const newPlayers = Array.isArray(body.newPlayers) ? body.newPlayers.filter(Boolean) : [];
-  if (!eventId || !playerId || oldPlayers.length !== 2 || newPlayers.length !== 2) {
-    return reply({ error: "Choose two players for this pairing." }, 400);
-  }
-  if (new Set(newPlayers).size !== 2) return reply({ error: "A pairing needs two different players." }, 400);
+  const pairings = Array.isArray(body.pairings) ? body.pairings.map(pair => Array.isArray(pair) ? pair.filter(Boolean) : []) : [];
+  if (!eventId || !playerId || !pairings.length) return reply({ error: "Add the complete pairing set before saving." }, 400);
   const event = await getEvent(eventId);
   if (!event) return reply({ error: "Event not found." }, 404);
   const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
   const attending = new Set(attendingRows.map(row => row.player_id));
   if (!attending.has(playerId)) return reply({ error: "Only attendees can edit the pairings." }, 403);
-  if (newPlayers.some(id => !attending.has(id))) return reply({ error: "Choose players marked In for this session." }, 400);
-  const samePair = (left, right) => Array.isArray(left) && left.length === 2 && [...left].sort().join(":") === [...right].sort().join(":");
-  const scores = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=*`);
-  const pairings = await getEventPairings(eventId, [...attending].map(id => ({ id })), scores);
-  const pairingIndex = pairings.findIndex(pair => samePair(pair, oldPlayers));
-  if (pairingIndex < 0) return reply({ error: "That pairing is not available in the editable schedule." }, 404);
-  if (pairings.some((pair, index) => index !== pairingIndex && pair.some(id => newPlayers.includes(id)))) {
-    return reply({ error: "Each attendee can only appear in one pairing." }, 400);
-  }
-  pairings[pairingIndex] = newPlayers;
-  const matches = (scores || []).filter(row => (row.status || "scheduled") === "scheduled");
-  const updates = [];
-  for (const row of matches) {
-    const side = samePair(row.team_a_player_ids, oldPlayers) ? "a" : samePair(row.team_b_player_ids, oldPlayers) ? "b" : null;
-    if (!side) continue;
-    const opponent = side === "a" ? row.team_b_player_ids : row.team_a_player_ids;
-    if ((opponent || []).some(id => newPlayers.includes(id))) {
-      return reply({ error: "That pairing would put the same player on both teams in a matchup." }, 400);
-    }
-    const patch = side === "a" ? { team_a_player_ids: newPlayers } : { team_b_player_ids: newPlayers };
-    updates.push({ row, patch });
-  }
-  if (!updates.length) return reply({ error: "That pairing is not available in the editable schedule." }, 404);
+  if (pairings.some(pair => pair.length !== 2 || new Set(pair).size !== 2)) return reply({ error: "Each pairing needs two different players." }, 400);
+  const allPlayers = pairings.flat();
+  if (allPlayers.some(id => !attending.has(id))) return reply({ error: "Choose players marked In for this session." }, 400);
+  if (new Set(allPlayers).size !== allPlayers.length) return reply({ error: "Each attendee can only appear in one pairing. Make all changes, then save the full set." }, 400);
   await saveEventPairings(eventId, pairings);
-  for (const update of updates) {
-    const { row, patch } = update;
-    await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, {
-      method: "PATCH",
-      headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({ ...patch, pairing_manual: true, updated_at: new Date().toISOString() }),
-    });
-  }
-  return reply({ ok: true, updated: updates.length });
+  const schedule = await generateEventSchedule(eventId, { force: true });
+  return reply({ ok: true, updated: pairings.length, scheduleUpdated: schedule.saved });
 }
 
 async function deleteEvent(body) {
