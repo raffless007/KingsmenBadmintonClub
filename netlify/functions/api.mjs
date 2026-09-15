@@ -883,6 +883,47 @@ async function adminSaveMatch(body) {
   return reply({ ok: true });
 }
 
+async function savePairing(body) {
+  const eventId = String(body.eventId || "");
+  const playerId = String(body.playerId || "");
+  const oldPlayers = Array.isArray(body.oldPlayers) ? body.oldPlayers.filter(Boolean) : [];
+  const newPlayers = Array.isArray(body.newPlayers) ? body.newPlayers.filter(Boolean) : [];
+  if (!eventId || !playerId || oldPlayers.length !== 2 || newPlayers.length !== 2) {
+    return reply({ error: "Choose two players for this pairing." }, 400);
+  }
+  if (new Set(newPlayers).size !== 2) return reply({ error: "A pairing needs two different players." }, 400);
+  const event = await getEvent(eventId);
+  if (!event) return reply({ error: "Event not found." }, 404);
+  const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
+  const attending = new Set(attendingRows.map(row => row.player_id));
+  if (!attending.has(playerId)) return reply({ error: "Only attendees can edit the pairings." }, 403);
+  if (newPlayers.some(id => !attending.has(id))) return reply({ error: "Choose players marked In for this session." }, 400);
+  const samePair = (left, right) => Array.isArray(left) && left.length === 2 && [...left].sort().join(":") === [...right].sort().join(":");
+  const scores = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=*`);
+  const matches = (scores || []).filter(row => (row.status || "scheduled") === "scheduled");
+  const updates = [];
+  for (const row of matches) {
+    const side = samePair(row.team_a_player_ids, oldPlayers) ? "a" : samePair(row.team_b_player_ids, oldPlayers) ? "b" : null;
+    if (!side) continue;
+    const opponent = side === "a" ? row.team_b_player_ids : row.team_a_player_ids;
+    if ((opponent || []).some(id => newPlayers.includes(id))) {
+      return reply({ error: "That pairing would put the same player on both teams in a matchup." }, 400);
+    }
+    const patch = side === "a" ? { team_a_player_ids: newPlayers } : { team_b_player_ids: newPlayers };
+    updates.push({ row, patch });
+  }
+  if (!updates.length) return reply({ error: "That pairing is not available in the editable schedule." }, 404);
+  for (const update of updates) {
+    const { row, patch } = update;
+    await db(`match_scores?id=eq.${encodeURIComponent(row.id)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ ...patch, pairing_manual: true, updated_at: new Date().toISOString() }),
+    });
+  }
+  return reply({ ok: true, updated: updates.length });
+}
+
 async function deleteEvent(body) {
   if (!body.eventId) return reply({ error: "Event not found." }, 404);
   const event = await getEvent(body.eventId);
@@ -1140,6 +1181,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "media-upload-url") return createMediaUpload(body);
     if (req.method === "POST" && action === "media-finalize") return finalizeMediaUpload(body);
     if (req.method === "POST" && action === "admin-login") return adminLogin(body);
+    if (req.method === "POST" && action === "save-pairing") return savePairing(body);
     if (req.method === "GET" && action === "admin-state") {
       if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
       return reply(await adminState());
