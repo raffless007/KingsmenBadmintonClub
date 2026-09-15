@@ -172,7 +172,9 @@ function auditDetails(body) {
   const scalarKeys = [
     "eventId", "playerId", "submittedBy", "scoreId", "tournamentId", "mediaId",
     "status", "paid", "hoursPlayed", "shuttleFee", "targetPoints", "bestOf",
-    "courtName", "scheduledStart", "scheduledEnd", "mode", "fileName",
+    "courtName", "scheduledStart", "scheduledEnd", "mode", "fileName", "action",
+    "announcementId", "matchId", "locationId", "role", "partnerPlayerId", "position",
+    "courtCount", "matchMinutes", "changeoverMinutes", "entryFee", "kind", "title",
   ];
   for (const key of scalarKeys) {
     if (body[key] !== undefined && body[key] !== null && body[key] !== "") details[key] = body[key];

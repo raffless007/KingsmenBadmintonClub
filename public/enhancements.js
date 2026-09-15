@@ -23,7 +23,7 @@
     const style = document.createElement("style");
     style.id = "kbcEnhancementStyles";
     style.textContent = `
-      .kbc-enhancement{margin-top:20px}.kbc-enhancement .card{padding:22px}.kbc-enhancement h3{margin:0}.kbc-muted{color:var(--muted);font-size:11px}.kbc-list{display:grid;gap:10px;margin-top:14px}.kbc-list-row{display:flex;justify-content:space-between;align-items:center;gap:12px;border-top:1px solid var(--line);padding:11px 0}.kbc-list-row:first-child{border-top:0}.kbc-chip{display:inline-flex;align-items:center;gap:5px;border-radius:999px;background:#e7f7ff;color:var(--green);padding:5px 9px;font-size:9px;font-weight:900}.kbc-chip.warn{background:#fff3d6;color:#80601f}.kbc-chip.danger{background:#f8ebe4;color:var(--warn)}.kbc-calendar{margin-top:12px}.kbc-offline{display:inline-flex;align-items:center;gap:7px;background:#fff3d6;color:#80601f;border-radius:999px;padding:7px 10px;font-size:10px;font-weight:900}.kbc-offline.online{background:#e7f7ff;color:var(--green)}.kbc-fullscreen{border:1px solid var(--line);background:white;border-radius:10px;padding:8px 11px;font-size:10px;font-weight:900;cursor:pointer}.live-match:fullscreen{background:var(--paper);width:100vw;height:100vh;padding:7vh 12vw;display:grid;align-content:center}.live-match:fullscreen .live-points{font-size:clamp(72px,13vw,180px)}.live-match:fullscreen .live-team strong{font-size:clamp(22px,3vw,42px)}.live-match:fullscreen .pointbtn{font-size:clamp(16px,2vw,28px);padding:22px}.kbc-announcement{border-left:4px solid var(--green)}.kbc-announcement.alert{border-left-color:var(--warn)}.kbc-announcement p{white-space:pre-wrap;line-height:1.55}.kbc-stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kbc-stat{border:1px solid var(--line);border-radius:12px;padding:12px}.kbc-stat small,.kbc-stat strong{display:block}.kbc-stat small{color:var(--muted);font-size:8px;letter-spacing:1px}.kbc-stat strong{font-size:22px;margin-top:3px}.kbc-entry{border:1px solid var(--line);border-radius:12px;padding:12px}.kbc-match{border-top:1px solid var(--line);padding:12px 0;display:grid;grid-template-columns:90px 1fr auto;gap:10px;align-items:center}.kbc-match:first-child{border-top:0}.kbc-modal-grid{display:grid;gap:12px}.kbc-modal-grid label{display:flex;align-items:center;gap:10px;font-size:12px}.kbc-modal-grid input{width:18px;height:18px}.kbc-audit-json{max-width:280px;white-space:pre-wrap;word-break:break-word}.kbc-admin-tools{display:grid;gap:15px;margin-top:18px}.kbc-admin-tools textarea{min-height:100px}.kbc-admin-tools .actions{justify-content:flex-start}.kbc-role-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end}.kbc-delete{color:var(--warn)}
+      .kbc-enhancement{margin-top:20px}.kbc-enhancement .card{padding:22px}.kbc-enhancement h3{margin:0}.kbc-muted{color:var(--muted);font-size:11px}.kbc-list{display:grid;gap:10px;margin-top:14px}.kbc-list-row{display:flex;justify-content:space-between;align-items:center;gap:12px;border-top:1px solid var(--line);padding:11px 0}.kbc-list-row:first-child{border-top:0}.kbc-chip{display:inline-flex;align-items:center;gap:5px;border-radius:999px;background:#e7f7ff;color:var(--green);padding:5px 9px;font-size:9px;font-weight:900}.kbc-chip.warn{background:#fff3d6;color:#80601f}.kbc-chip.danger{background:#f8ebe4;color:var(--warn)}.kbc-calendar{margin-top:12px}.kbc-offline{display:inline-flex;align-items:center;gap:7px;background:#fff3d6;color:#80601f;border-radius:999px;padding:7px 10px;font-size:10px;font-weight:900}.kbc-offline.online{background:#e7f7ff;color:var(--green)}.kbc-fullscreen{border:1px solid var(--line);background:white;border-radius:10px;padding:8px 11px;font-size:10px;font-weight:900;cursor:pointer}.live-match:fullscreen{background:var(--paper);width:100vw;height:100vh;padding:7vh 12vw;display:grid;align-content:center}.live-match:fullscreen .live-points{font-size:clamp(72px,13vw,180px)}.live-match:fullscreen .live-team strong{font-size:clamp(22px,3vw,42px)}.live-match:fullscreen .pointbtn{font-size:clamp(16px,2vw,28px);padding:22px}.kbc-announcement{border-left:4px solid var(--green)}.kbc-announcement.alert{border-left-color:var(--warn)}.kbc-announcement p{white-space:pre-wrap;line-height:1.55}.kbc-stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.kbc-stat{border:1px solid var(--line);border-radius:12px;padding:12px}.kbc-stat small,.kbc-stat strong{display:block}.kbc-stat small{color:var(--muted);font-size:8px;letter-spacing:1px}.kbc-stat strong{font-size:22px;margin-top:3px}.kbc-entry{border:1px solid var(--line);border-radius:12px;padding:12px}.kbc-match{border-top:1px solid var(--line);padding:12px 0;display:grid;grid-template-columns:90px 1fr auto;gap:10px;align-items:center}.kbc-match:first-child{border-top:0}.kbc-modal-grid{display:grid;gap:12px}.kbc-modal-grid label{display:flex;align-items:center;gap:10px;font-size:12px}.kbc-modal-grid input{width:18px;height:18px}.kbc-audit-json{max-width:280px;white-space:pre-wrap;word-break:break-word}.kbc-audit-human{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fbfdfe}.kbc-audit-human + .kbc-audit-human{margin-top:10px}.kbc-audit-human p{margin:5px 0 0;font-size:12px;line-height:1.45}.kbc-audit-human .kbc-audit-meta{display:flex;justify-content:space-between;gap:12px;align-items:center}.kbc-audit-human .kbc-audit-change{font-size:14px;font-weight:850;margin-top:7px}.kbc-audit-human details{margin-top:9px}.kbc-audit-human summary{cursor:pointer;color:var(--green);font-size:10px;font-weight:900}.kbc-admin-tools{display:grid;gap:15px;margin-top:18px}.kbc-admin-tools textarea{min-height:100px}.kbc-admin-tools .actions{justify-content:flex-start}.kbc-role-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end}.kbc-delete{color:var(--warn)}
       @media(max-width:800px){.kbc-stat-grid{grid-template-columns:repeat(2,1fr)}.kbc-match{grid-template-columns:1fr}.kbc-role-grid{grid-template-columns:1fr}.live-match:fullscreen{padding:5vh 5vw}}
     `;
     document.head.appendChild(style);
@@ -229,10 +229,114 @@
     try { const result = await request()("admin-state", "GET", null, true); enhancement.adminRoles = result.roles || []; const players = result.players || []; target.innerHTML = `<div class="kbc-role-grid"><select class="control" id="kbcRolePlayer"><option value="">Choose player</option>${players.filter((player) => player.active).map((player) => `<option value="${player.id}">${esc(player.name)}</option>`).join("")}</select><select class="control" id="kbcRoleValue"><option>admin</option><option>treasurer</option><option>scheduler</option><option>scorekeeper</option><option>media</option><option>owner</option></select><button class="secondary" id="kbcSaveRole">Assign</button></div><div class="kbc-list">${enhancement.adminRoles.map((role) => `<div class="kbc-list-row"><span>${esc(players.find((player) => player.id === role.player_id)?.name || role.player_id)}</span><span class="kbc-chip">${role.role}</span></div>`).join("")}</div>`; $("kbcSaveRole").onclick = async () => { if (!$('kbcRolePlayer').value) return notify("Choose a player"); try { await request()("admin-set-role", "POST", { playerId: $('kbcRolePlayer').value, role: $('kbcRoleValue').value }, true); notify("Admin role saved"); renderAdminRoles(); } catch (error) { notify(error.message); } }; } catch (error) { target.innerHTML = `<p class="error">${esc(error.message)}</p>`; }
   }
 
+  function auditEvent(log) {
+    const details = log.details || {};
+    const eventId = details.eventId || (log.target_type === "event" ? log.target_id : null);
+    return (state().events || []).find((event) => event.id === eventId);
+  }
+
+  function auditPlayer(id) {
+    return id ? playerName(id) : "a player";
+  }
+
+  function auditTarget(log) {
+    const details = log.details || {};
+    const event = auditEvent(log);
+    if (event) return `${prettyDate(event.event_date)} session${event.location ? ` at ${event.location}` : ""}`;
+    if (details.playerId && log.target_type !== "event") return auditPlayer(details.playerId);
+    if (log.target_type === "tournament") return state().tournaments?.find((item) => item.id === log.target_id)?.name || "a tournament";
+    if (log.target_type === "match_score") return "a scheduled match";
+    if (log.target_type === "media") return "a media item";
+    if (log.target_type === "announcement") return "a club announcement";
+    return log.target_type ? `the ${String(log.target_type).replaceAll("_", " ")}` : "the clubhouse";
+  }
+
+  function auditActor(log) {
+    if (log.actor_type === "admin") return "An admin";
+    if (log.actor_type === "player") return playerName(log.actor_id);
+    return "A visitor";
+  }
+
+  function auditArea(action) {
+    if (["eoi", "paid", "shuttle-fee", "save-pairing", "announcement-read"].includes(action)) return "the weekly session area";
+    if (["score", "live-score", "live-score-new"].includes(action)) return "the Scores area";
+    if (["media-upload-url", "media-finalize", "admin-delete-media"].includes(action)) return "the Media area";
+    if (action.includes("tournament")) return "the Tournaments area";
+    if (["push-subscribe", "push-unsubscribe", "notification-preferences"].includes(action)) return "notification settings";
+    if (action.startsWith("admin-") || action === "admin-state" || action === "admin-audit-log") return "Admin controls";
+    if (["player-pin", "add-player"].includes(action)) return "player sign-in or profile settings";
+    return "the clubhouse";
+  }
+
+  function auditStatus(value) {
+    if (value === "yes") return "In";
+    if (value === "no") return "Out";
+    if (value === "none") return "No response";
+    return value || "updated";
+  }
+
+  function auditMoney(value) {
+    const amount = Number(value);
+    return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : "the updated amount";
+  }
+
+  function auditChange(log) {
+    const action = log.action || "";
+    const details = log.details || {};
+    const target = auditTarget(log);
+    const fields = Array.isArray(details.changedFields) && details.changedFields.length
+      ? ` (${details.changedFields.map((field) => String(field).replaceAll("_", " ")).join(", ")})`
+      : "";
+    if (["admin-state", "admin-audit-log"].includes(action)) return "Viewed information; no data was changed.";
+    if (action === "eoi" || action === "admin-set-eoi") return `Changed ${auditPlayer(details.playerId)}'s attendance response for the ${target} to ${auditStatus(details.status)}.`;
+    if (action === "paid" || action === "admin-set-payment") return `Changed ${auditPlayer(details.playerId)}'s payment status for the ${target} to ${details.paid ? "Paid" : "Outstanding"}.`;
+    if (action === "shuttle-fee") return `Updated the shuttle fee for the ${target} to ${auditMoney(details.shuttleFee)}.`;
+    if (action === "admin-set-hours") return `Changed ${auditPlayer(details.playerId)}'s playing time for the ${target} to ${details.hoursPlayed || "0"} hours.`;
+    if (action === "score") return `Entered or updated a match result for the ${target}${details.targetPoints ? ` using ${details.targetPoints} points` : ""}.`;
+    if (action === "live-score-new") return `Started a new live doubles match for the ${target}.`;
+    if (action === "live-score") {
+      const liveAction = details.action === "pointA" ? "added a point to Team A" : details.action === "pointB" ? "added a point to Team B" : details.action === "undo" ? "undid the last point" : details.action === "start" ? "started the match" : details.action === "configure" ? "changed the match settings" : "updated the live score";
+      return `${liveAction.charAt(0).toUpperCase()}${liveAction.slice(1)} for ${target}.`;
+    }
+    if (action === "save-pairing") return `Saved the complete player pairing set for the ${target}; the schedule was refreshed.`;
+    if (action === "admin-save-event") return `Updated the event details for the ${target}${fields}.`;
+    if (action === "admin-delete-event") return `Deleted the upcoming event for the ${target}.`;
+    if (action === "admin-generate-schedule") return `Generated a new rotation schedule for the ${target}.`;
+    if (action === "admin-save-match") return `Updated a scheduled matchup for the ${target}${fields}.`;
+    if (action === "admin-delete-score") return `Deleted a recorded match result for the ${target}.`;
+    if (action === "admin-create-tournament") return `Created the tournament${details.name ? ` "${details.name}"` : ""}.`;
+    if (action === "admin-generate-tournament-draw") return `Generated the tournament draw for ${target}.`;
+    if (action === "admin-save-tournament-match") return `Updated a tournament match result for ${target}.`;
+    if (action === "admin-create-announcement") return `Published a club announcement${details.title ? ` titled "${details.title}"` : ""}.`;
+    if (action === "admin-update-announcement") return `Updated ${target}.`;
+    if (action === "admin-delete-announcement") return `Archived ${target}.`;
+    if (action === "admin-set-role") return `Assigned the ${details.role || "selected"} admin role to ${auditPlayer(details.playerId)}.`;
+    if (action === "admin-reset-player-pin") return `Reset the PIN for ${auditPlayer(details.playerId)}.`;
+    if (action === "admin-change-passcode") return "Changed the clubhouse admin passcode. The new passcode was not recorded.";
+    if (action === "admin-revert-audit") return "Restored the earlier value from an audit entry.";
+    if (action === "player-pin") return "Signed in or created a player PIN. PIN digits were not recorded.";
+    if (action === "push-subscribe") return "Enabled push notifications for this device.";
+    if (action === "push-unsubscribe") return "Disabled push notifications for this device.";
+    if (action === "notification-preferences") return "Updated notification preferences.";
+    if (action === "announcement-read") return `Marked ${target} as read.`;
+    if (action === "tournament-register") return `Registered for ${target}.`;
+    if (action === "admin-login") return "Signed in to the admin area.";
+    if (action === "add-player") return `Added ${details.name ? `the player ${details.name}` : "a new player"}.`;
+    return `Performed "${action.replaceAll("-", " ")}" on ${target}.`;
+  }
+
+  function renderPlainAuditLog(panel, logs) {
+    let section = panel.querySelector("#kbcAuditPlainEnglish");
+    if (!section) { section = document.createElement("article"); section.id = "kbcAuditPlainEnglish"; section.className = "card kbc-enhancement"; panel.prepend(section); }
+    section.innerHTML = `<p class="eyebrow">PLAIN-ENGLISH ACTIVITY</p><h3>What people accessed and changed</h3><p class="kbc-muted">Each entry explains the person, the area they used, the change they made, and the outcome. Technical details remain available in the table below.</p><div style="margin-top:14px">${logs.slice(0, 50).map((log) => `<div class="kbc-audit-human"><div class="kbc-audit-meta"><strong>${esc(auditActor(log))}</strong><span class="kbc-chip ${log.succeeded ? "" : "danger"}">${log.succeeded ? "Completed" : "Failed"}</span></div><p><strong>Accessed:</strong> ${esc(auditArea(log.action))} - ${esc(new Date(log.created_at).toLocaleString("en-AU"))}</p><p class="kbc-audit-change"><strong>Changed:</strong> ${esc(auditChange(log))}</p><p><strong>Result:</strong> ${log.succeeded ? "The request was completed successfully." : `No data was changed because the request failed${log.status_code ? ` (${log.status_code})` : ""}.`}</p><details><summary>Technical record</summary><div class="kbc-audit-json"><strong>Action</strong> ${esc(log.action)}<br><strong>Target</strong> ${esc(log.target_type || "-")} ${esc(log.target_id || "")}<br><strong>Details</strong> ${esc(JSON.stringify(log.details || {}, null, 2))}</div></details></div>`).join("")}</div>`;
+  }
+
   function renderAuditEnhancements() {
     const panel = $("auditLogPanel");
     const logs = (() => { try { return window.eval("adminAuditLogs") || []; } catch { return []; } })();
-    if (!panel || !logs.length || panel.querySelector("#kbcAuditSnapshots")) return;
+    if (!panel || !logs.length) return;
+    renderPlainAuditLog(panel, logs);
+    if (panel.querySelector("#kbcAuditSnapshots")) return;
     const reversible = logs.filter((log) => log.before_data && !log.reverted_at).slice(0, 20);
     const section = document.createElement("article");
     section.id = "kbcAuditSnapshots";
