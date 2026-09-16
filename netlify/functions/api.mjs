@@ -871,11 +871,15 @@ const ADMIN_PERMISSIONS = {
 const ALL_ADMIN_PERMISSIONS = new Set(["events", "schedule", "eoi", "money", "scores", "roster", "media", "tournaments", "announcements", "roles", "audit"]);
 
 async function adminPermissionSet(role) {
-  if (ADMIN_PERMISSIONS[role]) return ADMIN_PERMISSIONS[role];
   if (!role) return new Set();
-  const rows = await db(`admin_role_definitions?slug=eq.${encodeURIComponent(role)}&active=eq.true&select=permissions`);
-  const permissions = rows?.[0]?.permissions;
-  return new Set(Array.isArray(permissions) ? permissions.filter(permission => ALL_ADMIN_PERMISSIONS.has(permission)) : []);
+  const rows = await db(`admin_role_definitions?slug=eq.${encodeURIComponent(role)}&select=active,permissions`);
+  if (rows?.length && !rows[0].active) return new Set();
+  if (rows?.length) {
+    const permissions = rows[0].permissions;
+    return new Set(Array.isArray(permissions) ? permissions.filter(permission => ALL_ADMIN_PERMISSIONS.has(permission)) : []);
+  }
+  if (ADMIN_PERMISSIONS[role]) return ADMIN_PERMISSIONS[role];
+  return new Set();
 }
 
 async function hasAdminPermission(req, permission) {
@@ -1085,9 +1089,8 @@ async function createAdminRole(body) {
 async function updateAdminRole(body) {
   const role = await getRoleDefinition(body.slug);
   if (!role) return reply({ error: "Admin role not found." }, 404);
-  if (role.is_system) return reply({ error: "Default roles cannot be edited." }, 409);
   const name = String(body.name || "").trim();
-  const permissions = cleanRolePermissions(body.permissions);
+  const permissions = role.slug === "owner" ? [...ADMIN_PERMISSIONS.owner] : cleanRolePermissions(body.permissions);
   if (name.length < 2 || name.length > 60) return reply({ error: "Role name must be between 2 and 60 characters." }, 400);
   if (!permissions.length) return reply({ error: "Choose at least one app function for this role." }, 400);
   await db(`admin_role_definitions?slug=eq.${encodeURIComponent(role.slug)}`, {
@@ -1100,7 +1103,6 @@ async function updateAdminRole(body) {
 async function deleteAdminRole(body) {
   const role = await getRoleDefinition(body.slug);
   if (!role) return reply({ error: "Admin role not found." }, 404);
-  if (role.is_system) return reply({ error: "Default roles cannot be removed." }, 409);
   await db(`admin_role_definitions?slug=eq.${encodeURIComponent(role.slug)}`, {
     method: "PATCH", headers: { Prefer: "return=minimal" },
     body: JSON.stringify({ active: false, updated_at: new Date().toISOString() }),
@@ -1455,10 +1457,8 @@ async function recordScoreAction(body) {
 async function adminLogin(body, req) {
   if (body.playerId && body.playerPin) {
     const players = await db(`players?id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=id,name,pin_hash`);
-    const roles = await db(`admin_roles?player_id=eq.${encodeURIComponent(body.playerId)}&active=eq.true&select=role`);
-    const role = roles?.[0]?.role;
-    const roleDefinition = await getRoleDefinition(role);
-    const validRole = role === "owner" || Boolean(roleDefinition?.active);
+    const role = await assignedAdminRole(body.playerId);
+    const validRole = Boolean(role);
     if (!players?.[0]?.pin_hash || !verifyPasscode(String(body.playerPin), players[0].pin_hash) || !role || !validRole) return reply({ error: "Admin player PIN or role is incorrect." }, 401);
     body.__adminActorId = String(body.playerId);
     body.__adminRole = role;
@@ -1633,7 +1633,29 @@ async function playerPin(body) {
       method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ pin_hash: passcodeHash(pin) }),
     });
   }
-  return reply({ ok: true, token: signPlayerSession(player.id), player: { id: player.id, name: player.name, active: player.active, has_pin: true } });
+  const role = await assignedAdminRole(player.id);
+  return reply({
+    ok: true,
+    token: signPlayerSession(player.id),
+    adminToken: role ? signAdminSession(role, player.id) : null,
+    adminRole: role,
+    player: { id: player.id, name: player.name, active: player.active, has_pin: true },
+  });
+}
+
+async function assignedAdminRole(playerId) {
+  const roles = await db(`admin_roles?player_id=eq.${encodeURIComponent(String(playerId))}&active=eq.true&select=role`);
+  const role = roles?.[0]?.role;
+  const definition = await getRoleDefinition(role);
+  if (definition) return definition.active ? role : null;
+  return role === "owner" ? role : null;
+}
+
+async function playerAdminSession(req) {
+  const session = playerSession(req);
+  if (!session?.playerId) return reply({ admin: false, role: null, token: null });
+  const role = await assignedAdminRole(session.playerId);
+  return reply({ admin: Boolean(role), role, token: role ? signAdminSession(role, session.playerId) : null });
 }
 
 async function pushConfig() {
@@ -2167,6 +2189,7 @@ export default async (req) => {
 
     if (req.method === "GET" && action === "push-config") return pushConfig();
     if (req.method === "GET" && action === "state") return reply(await appState(req));
+    if (req.method === "GET" && action === "admin-session") return playerAdminSession(req);
     const playerIdForAction = {
       eoi: body.playerId,
       paid: body.playerId,
