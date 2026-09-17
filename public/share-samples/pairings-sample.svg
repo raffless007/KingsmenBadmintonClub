@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1050" viewBox="0 0 1080 1050">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eef9ff"/><stop offset="1" stop-color="#dfeaf1"/></linearGradient>
+    <style>text{font-family:Inter,Arial,sans-serif} .eyebrow{font-size:16px;font-weight:900;letter-spacing:3px} .title{font-size:40px;font-weight:900} .date{font-size:24px;font-weight:700} .label{font-size:14px;font-weight:900;letter-spacing:1px} .names{font-size:27px;font-weight:900}</style>
+  </defs>
+  <rect width="1080" height="1220" fill="url(#bg)"/>
+  <rect width="1080" height="310" fill="#101418"/>
+  <rect x="72" y="64" width="96" height="96" rx="22" fill="#fff"/>
+  <image href="../assets/kingsmen-logo.png" x="72" y="64" width="96" height="96" preserveAspectRatio="xMidYMid slice"/>
+  <text x="198" y="101" fill="#21d4ff" class="eyebrow">KINGSMEN BADMINTON</text>
+  <text x="198" y="151" fill="#fff" class="title">MATCH-DAY PAIRINGS</text>
+  <text x="198" y="197" fill="#bfeeff" class="date">Thursday 17 September</text>
+  <text x="198" y="235" fill="#c8d8df" font-size="17" font-weight="600">Sydney Sports Park - Kings Park · Kings Park</text>
+  <rect x="72" y="270" width="936" height="66" rx="16" fill="#173044"/>
+  <text x="102" y="311" fill="#9feaff" class="label">7 PAIRINGS · 14 PLAYERS</text>
+
+  <g transform="translate(72 382)"><rect width="456" height="132" rx="20" fill="#e5f5ff" stroke="#fff" stroke-width="2"/><text x="26" y="36" fill="#55717e" class="label">PAIRING 01</text><text x="26" y="84" fill="#101418" class="names">Pavel  &amp;  Ashik</text></g>
+  <g transform="translate(552 382)"><rect width="456" height="132" rx="20" fill="#eaf8ed" stroke="#fff" stroke-width="2"/><text x="26" y="36" fill="#55717e" class="label">PAIRING 02</text><text x="26" y="84" fill="#101418" class="names">Alam  &amp;  Emon</text></g>
+  <g transform="translate(72 536)"><rect width="456" height="132" rx="20" fill="#fff3d8" stroke="#fff" stroke-width="2"/><text x="26" y="36" fill="#55717e" class="label">PAIRING 03</text><text x="26" y="84" fill="#101418" class="names">Ayon  &amp;  Shajib</text></g>
+  <g transform="translate(552 536)"><rect width="456" height="132" rx="20" fill="#f2eaff" stroke="#fff" stroke-width="2"/><text x="26" y="36" fill="#55717e" class="label">PAIRING 04</text><text x="26" y="84" fill="#101418" class="names">Zahir  &amp;  Kibria</text></g>
+  <g transform="translate(72 690)"><rect width="456" height="132" rx="20" fill="#ffe9ef" stroke="#fff" stroke-width="2"/><text x="26" y="36" fill="#55717e" class="label">PAIRING 05</text><text x="26" y="84" fill="#101418" class="names">Rafeed  &amp;  Harsha</text></g>
+  <g transform="translate(552 690)"><rect width="456" height="132" rx="20" fill="#e5f4f1" stroke="#fff" stroke-width="2"/><text x="26" y="36" fill="#55717e" class="label">PAIRING 06</text><text x="26" y="84" fill="#101418" class="names">Palash  &amp;  Rizvi</text></g>
+  <g transform="translate(72 844)"><rect width="456" height="132" rx="20" fill="#eef0ff" stroke="#fff" stroke-width="2"/><text x="26" y="36" fill="#55717e" class="label">PAIRING 07</text><text x="26" y="84" fill="#101418" class="names">Saad  &amp;  Shaikat</text></g>
+  <text x="72" y="1015" fill="#55717e" class="label">KINGS MEN SOCIAL · SHARE IN WHATSAPP</text>
+</svg>

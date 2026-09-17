@@ -94,6 +94,7 @@ create table if not exists public.tournaments (
   prize_details text,
   rules text,
   notes text,
+  stage_config jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

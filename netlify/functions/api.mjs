@@ -973,6 +973,27 @@ async function adminState(req) {
   return { players, roles: roles || [], roleDefinitions: roleDefinitions || [], announcements: announcements || [], currentRole, permissions: [...await adminPermissionSet(currentRole)], canManageRoles: currentRole === "owner" };
 }
 
+async function adminRoleHolders() {
+  const [assignments, definitions] = await Promise.all([
+    db("admin_roles?active=eq.true&select=player_id,role&order=player_id"),
+    db("admin_role_definitions?active=eq.true&select=slug,name"),
+  ]);
+  const activeAssignments = Array.isArray(assignments) ? assignments : [];
+  const ids = [...new Set(activeAssignments.map((assignment) => String(assignment.player_id)).filter(Boolean))];
+  if (!ids.length) return { players: [] };
+  const players = await db(`players?id=in.(${ids.join(",")})&active=eq.true&select=id,name&order=name.asc`);
+  const roleNames = new Map((definitions || []).map((definition) => [String(definition.slug), definition.name]));
+  const rolesByPlayer = new Map(activeAssignments
+    .filter((assignment) => assignment.role === "owner" || roleNames.has(String(assignment.role)))
+    .map((assignment) => [String(assignment.player_id), assignment.role]));
+  return {
+    players: (players || []).map((player) => {
+      const role = rolesByPlayer.get(String(player.id));
+      return { id: player.id, name: player.name, role, roleName: roleNames.get(String(role)) || role || "Admin" };
+    }),
+  };
+}
+
 async function adminAuditLog() {
   const [logs, players] = await Promise.all([
     db("audit_logs?select=id,created_at,actor_type,actor_id,action,target_type,target_id,status_code,succeeded,details,before_data,after_data,reverted_at,reverted_by&order=created_at.desc&limit=200"),
@@ -1851,6 +1872,74 @@ function addMinutesToTime(time, minutes) {
   return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
+function stageSlug(value, fallback) {
+  const slug = String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+  return slug || fallback;
+}
+
+function defaultTournamentStages(tournament = {}) {
+  return [{
+    id: "main-stage",
+    name: "Main stage",
+    type: "groups",
+    tier: "main",
+    pointCap: Number(tournament.point_cap || 21),
+    pointDifferential: Number(tournament.point_differential ?? 2),
+    bestOf: Number(tournament.best_of || 1),
+    groupCount: 1,
+    teamsPerGroup: Number(tournament.max_entries || 0) || null,
+    qualificationRules: [],
+    bracketSize: 0,
+    bracketMatches: [],
+  }];
+}
+
+function normaliseTournamentStages(value, tournament = {}) {
+  const source = Array.isArray(value) && value.length ? value : defaultTournamentStages(tournament);
+  const used = new Set();
+  const number = (raw, fallback, min, max) => {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.round(parsed))) : fallback;
+  };
+  return source.slice(0, 64).map((raw, index) => {
+    const item = raw && typeof raw === "object" ? raw : {};
+    const base = stageSlug(item.id || item.name, `stage-${index + 1}`);
+    let id = base;
+    let suffix = 2;
+    while (used.has(id)) id = `${base}-${suffix++}`;
+    used.add(id);
+    const type = item.type === "knockout" ? "knockout" : "groups";
+    const tier = ["group", "cup", "plate", "main", "custom"].includes(item.tier) ? item.tier : type === "groups" ? "group" : "custom";
+    const qualificationRules = Array.isArray(item.qualificationRules) ? item.qualificationRules.slice(0, 32).map((rule) => ({
+      from: number(rule?.from, 1, 1, 1000),
+      to: number(rule?.to, number(rule?.from, 1, 1, 1000), 1, 1000),
+      destinationStage: String(rule?.destinationStage || "").trim().slice(0, 64),
+      path: String(rule?.path || "").trim().slice(0, 160),
+    })) : [];
+    const bracketMatches = Array.isArray(item.bracketMatches) ? item.bracketMatches.slice(0, 256).map((match, matchIndex) => ({
+      matchNumber: number(match?.matchNumber, matchIndex + 1, 1, 1000),
+      sourceA: String(match?.sourceA || "").trim().slice(0, 160),
+      sourceB: String(match?.sourceB || "").trim().slice(0, 160),
+      nextStageKey: stageSlug(match?.nextStageKey || "", ""),
+      nextMatchNumber: match?.nextMatchNumber ? number(match.nextMatchNumber, 1, 1, 1000) : null,
+    })) : [];
+    return {
+      id,
+      name: String(item.name || `Stage ${index + 1}`).trim().slice(0, 100) || `Stage ${index + 1}`,
+      type,
+      tier,
+      pointCap: number(item.pointCap, number(tournament.point_cap, 21, 1, 30), 1, 30),
+      pointDifferential: number(item.pointDifferential, number(tournament.point_differential, 2, 0, 10), 0, 10),
+      bestOf: [1, 3].includes(Number(item.bestOf)) ? Number(item.bestOf) : number(tournament.best_of, 1, 1, 3) === 3 ? 3 : 1,
+      groupCount: number(item.groupCount, 1, 1, 64),
+      teamsPerGroup: item.teamsPerGroup ? number(item.teamsPerGroup, 1, 1, 1000) : null,
+      qualificationRules,
+      bracketSize: type === "knockout" ? number(item.bracketSize, Math.max(2, bracketMatches.length * 2), 2, 1000) : 0,
+      bracketMatches,
+    };
+  });
+}
+
 async function generateTournamentDraw(body) {
   if (!body.tournamentId) return reply({ error: "Tournament not found." }, 404);
   const tournaments = await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}&select=*`);
@@ -1862,17 +1951,65 @@ async function generateTournamentDraw(body) {
   const matches = [];
   let matchNumber = 1;
   const start = tournament.start_time || "09:00";
-  for (let left = 0; left < entries.length; left += 1) {
-    for (let right = left + 1; right < entries.length; right += 1) {
-      const slot = matches.length;
-      const courtIndex = slot % Math.max(1, Number(tournament.court_count || 1));
-      const roundIndex = Math.floor(slot / Math.max(1, Number(tournament.court_count || 1)));
-      const startAt = addMinutesToTime(start, roundIndex * (Number(tournament.match_minutes || 12) + Number(tournament.changeover_minutes || 1)));
-      matches.push({ tournament_id: body.tournamentId, round: 1, match_number: matchNumber++, court_name: `Court ${courtIndex + 1}`, scheduled_start: startAt, scheduled_end: addMinutesToTime(startAt, Number(tournament.match_minutes || 12)), team_a_entry_ids: [entries[left].id], team_b_entry_ids: [entries[right].id], target_points: tournament.point_cap || 21, best_of: tournament.best_of || 1 });
+  const stages = normaliseTournamentStages(tournament.stage_config, tournament);
+  const courtCount = Math.max(1, Number(tournament.court_count || 1));
+  const slotMinutes = Number(tournament.match_minutes || 12) + Number(tournament.changeover_minutes || 1);
+  const addMatch = (stage, extra = {}) => {
+    const slot = matches.length;
+    const courtIndex = slot % courtCount;
+    const roundIndex = Math.floor(slot / courtCount);
+    const startAt = addMinutesToTime(start, roundIndex * slotMinutes);
+    matches.push({
+      tournament_id: body.tournamentId,
+      round: extra.round || 1,
+      match_number: matchNumber++,
+      court_name: `Court ${courtIndex + 1}`,
+      scheduled_start: startAt,
+      scheduled_end: addMinutesToTime(startAt, Number(tournament.match_minutes || 12)),
+      team_a_entry_ids: extra.teamA || [],
+      team_b_entry_ids: extra.teamB || [],
+      target_points: stage.pointCap,
+      point_differential: stage.pointDifferential,
+      best_of: stage.bestOf,
+      stage_key: stage.id,
+      stage_name: stage.name,
+      stage_type: stage.type,
+      stage_tier: stage.tier,
+      stage_match_number: extra.stageMatchNumber || null,
+      group_number: extra.groupNumber || null,
+      source_a: extra.sourceA || null,
+      source_b: extra.sourceB || null,
+      next_stage_key: extra.nextStageKey || null,
+      next_match_number: extra.nextMatchNumber || null,
+    });
+  };
+  for (const stage of stages) {
+    let stageMatchNumber = 0;
+    if (stage.type === "groups") {
+      const groupCount = Math.max(1, stage.groupCount || 1);
+      const groups = Array.from({ length: groupCount }, () => []);
+      entries.forEach((entry, index) => groups[index % groupCount].push(entry));
+      groups.forEach((group, groupIndex) => {
+        for (let left = 0; left < group.length; left += 1) {
+          for (let right = left + 1; right < group.length; right += 1) {
+            stageMatchNumber += 1;
+            addMatch(stage, { teamA: [group[left].id], teamB: [group[right].id], groupNumber: groupIndex + 1, stageMatchNumber });
+          }
+        }
+      });
+      continue;
     }
+    const bracketMatches = stage.bracketMatches.length ? stage.bracketMatches : Array.from({ length: Math.max(1, Math.ceil(stage.bracketSize / 2)) }, (_, index) => ({ matchNumber: index + 1, sourceA: `Slot ${index * 2 + 1}`, sourceB: `Slot ${index * 2 + 2}` }));
+    bracketMatches.forEach((bracket) => addMatch(stage, {
+      sourceA: bracket.sourceA,
+      sourceB: bracket.sourceB,
+      stageMatchNumber: bracket.matchNumber,
+      nextStageKey: bracket.nextStageKey,
+      nextMatchNumber: bracket.nextMatchNumber,
+    }));
   }
   const rows = await db("tournament_matches", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(matches) });
-  await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ status: "in_progress", updated_at: new Date().toISOString() }) });
+  await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ stage_config: stages, status: "in_progress", updated_at: new Date().toISOString() }) });
   return reply({ ok: true, matches: rows || [] });
 }
 
@@ -1884,7 +2021,74 @@ async function saveTournamentMatch(body) {
   const gamesA = Number(body.gamesA), gamesB = Number(body.gamesB);
   if (!Number.isInteger(gamesA) || !Number.isInteger(gamesB) || gamesA < 0 || gamesB < 0 || gamesA === gamesB) return reply({ error: "Enter a winning tournament result." }, 400);
   await db(`tournament_matches?id=eq.${encodeURIComponent(body.matchId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ games_a: gamesA, games_b: gamesB, game_scores: Array.isArray(body.gameScores) ? body.gameScores : [], status: "completed", updated_at: new Date().toISOString() }) });
+  await resolveTournamentBracket(match.tournament_id);
   return reply({ ok: true });
+}
+
+async function resolveTournamentBracket(tournamentId) {
+  const rows = await db(`tournament_matches?tournament_id=eq.${encodeURIComponent(tournamentId)}&select=*`);
+  if (!Array.isArray(rows) || !rows.length) return;
+  const updates = new Map();
+  const setTeam = (row, side, ids) => {
+    const key = row.id;
+    const next = updates.get(key) || {};
+    const field = side === "a" ? "team_a_entry_ids" : "team_b_entry_ids";
+    if (JSON.stringify(row[field] || []) !== JSON.stringify(ids || [])) next[field] = ids || [];
+    updates.set(key, next);
+  };
+  const stageMatch = (row) => Number(row.stage_match_number || row.match_number || 0);
+  const winnerIds = (row) => Number(row.games_a) > Number(row.games_b) ? (row.team_a_entry_ids || []) : Number(row.games_b) > Number(row.games_a) ? (row.team_b_entry_ids || []) : [];
+  const targetFor = (row) => rows.find((candidate) => candidate.stage_key === row.next_stage_key && stageMatch(candidate) === Number(row.next_match_number));
+  rows.filter((row) => row.status === "completed" && row.next_stage_key && row.next_match_number).forEach((row) => {
+    const target = targetFor(row);
+    const winner = winnerIds(row);
+    if (!target || !winner.length) return;
+    const source = `${row.stage_name || row.stage_key || "Stage"} M${stageMatch(row)} winner`;
+    if (target.source_a === source) setTeam(target, "a", winner);
+    if (target.source_b === source) setTeam(target, "b", winner);
+  });
+  const allGroupRows = rows.filter((row) => row.stage_type === "groups" && row.group_number);
+  const groupCounts = new Map();
+  const completedGroupCounts = new Map();
+  allGroupRows.forEach((row) => {
+    const group = Number(row.group_number);
+    groupCounts.set(group, (groupCounts.get(group) || 0) + 1);
+    if (row.status === "completed") completedGroupCounts.set(group, (completedGroupCounts.get(group) || 0) + 1);
+  });
+  const readyGroups = new Set([...groupCounts.keys()].filter((group) => groupCounts.get(group) > 0 && completedGroupCounts.get(group) === groupCounts.get(group)));
+  const groupRows = allGroupRows.filter((row) => row.status === "completed");
+  const standings = new Map();
+  groupRows.forEach((row) => {
+    const group = Number(row.group_number);
+    const a = row.team_a_entry_ids?.[0];
+    const b = row.team_b_entry_ids?.[0];
+    if (!a || !b || Number(row.games_a) === Number(row.games_b)) return;
+    const table = standings.get(group) || new Map();
+    const ensure = (id) => table.get(id) || { id, wins: 0, diff: 0 };
+    const statA = ensure(a); const statB = ensure(b);
+    statA.wins += Number(row.games_a) > Number(row.games_b) ? 1 : 0;
+    statB.wins += Number(row.games_b) > Number(row.games_a) ? 1 : 0;
+    statA.diff += Number(row.games_a) - Number(row.games_b);
+    statB.diff += Number(row.games_b) - Number(row.games_a);
+    table.set(a, statA); table.set(b, statB); standings.set(group, table);
+  });
+  const groupStage = rows.find((row) => row.stage_type === "groups");
+  if (groupStage && standings.size) {
+    rows.filter((row) => row.source_a || row.source_b).forEach((row) => {
+      ["a", "b"].forEach((side) => {
+        const source = row[`source_${side}`] || "";
+        const match = source.match(/^Group\s+(\d+)\s+#(\d+)$/i);
+        if (!match) return;
+        if (!readyGroups.has(Number(match[1]))) return;
+        const table = standings.get(Number(match[1]));
+        if (!table) return;
+        const ranked = [...table.values()].sort((left, right) => right.wins - left.wins || right.diff - left.diff || String(left.id).localeCompare(String(right.id)));
+        const entry = ranked[Number(match[2]) - 1];
+        if (entry) setTeam(row, side, [entry.id]);
+      });
+    });
+  }
+  await Promise.all([...updates.entries()].filter(([, patch]) => Object.keys(patch).length).map(([id, patch]) => db(`tournament_matches?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) })));
 }
 
 async function removePlayer(body) {
@@ -2163,6 +2367,7 @@ async function createTournament(body) {
     point_cap: number(body.pointCap, 21, 1, 30),
     point_differential: number(body.pointDifferential, 2, 0, 10),
     best_of: [1, 3].includes(Number(body.bestOf)) ? Number(body.bestOf) : 1,
+    stage_config: normaliseTournamentStages(body.stageConfig, { point_cap: body.pointCap, point_differential: body.pointDifferential, best_of: body.bestOf, max_entries: body.maxEntries }),
     entry_fee: number(body.entryFee, 0, 0, 100000),
     shuttle_fee_included: Boolean(body.shuttleFeeIncluded),
     organiser_name: String(body.organiserName || "").trim().slice(0, 120) || null,
@@ -2178,6 +2383,20 @@ async function createTournament(body) {
     body: JSON.stringify(tournament),
   });
   return reply({ ok: true, tournament: rows?.[0] || null });
+}
+
+async function updateTournamentStages(body) {
+  if (!body.tournamentId) return reply({ error: "Tournament not found." }, 404);
+  const rows = await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}&select=*`);
+  const tournament = rows?.[0];
+  if (!tournament) return reply({ error: "Tournament not found." }, 404);
+  const stages = normaliseTournamentStages(body.stageConfig, tournament);
+  const updated = await db(`tournaments?id=eq.${encodeURIComponent(body.tournamentId)}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ stage_config: stages, updated_at: new Date().toISOString() }),
+  });
+  return reply({ ok: true, stages, tournament: updated?.[0] || null });
 }
 
 export default async (req) => {
@@ -2237,6 +2456,9 @@ export default async (req) => {
         return reply(await adminState(req));
       });
     }
+    if (req.method === "GET" && action === "admin-role-holders") {
+      return reply(await adminRoleHolders());
+    }
     if (req.method === "GET" && action === "admin-audit-log") {
       return audited(req, action, body, async () => {
         if (!isAdmin(req)) return reply({ error: "Admin session expired." }, 401);
@@ -2244,7 +2466,7 @@ export default async (req) => {
       });
     }
 
-    if (!["view-tab", "admin-view-tab", "admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
+    if (!["view-tab", "admin-view-tab", "admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-update-tournament-stages", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));
@@ -2254,7 +2476,7 @@ export default async (req) => {
     const permissionForAction = {
       "admin-save-event": "events", "admin-delete-event": "events", "admin-generate-schedule": "schedule", "admin-save-match": "schedule",
       "admin-set-eoi": "eoi", "admin-set-payment": "money", "admin-set-hours": "money", "admin-delete-score": "scores", "admin-create-tournament": "tournaments",
-      "admin-generate-tournament-draw": "tournaments", "admin-save-tournament-match": "scores", "admin-create-announcement": "announcements", "admin-update-announcement": "announcements", "admin-delete-announcement": "announcements", "admin-set-role": "roles", "admin-create-role": "roles", "admin-update-role": "roles", "admin-delete-role": "roles", "admin-revert-audit": "audit", "admin-delete-media": "media",
+      "admin-generate-tournament-draw": "tournaments", "admin-update-tournament-stages": "tournaments", "admin-save-tournament-match": "scores", "admin-create-announcement": "announcements", "admin-update-announcement": "announcements", "admin-delete-announcement": "announcements", "admin-set-role": "roles", "admin-create-role": "roles", "admin-update-role": "roles", "admin-delete-role": "roles", "admin-revert-audit": "audit", "admin-delete-media": "media",
     }[action];
     if (permissionForAction && !await hasAdminPermission(req, permissionForAction)) return audited(req, action, body, async () => reply({ error: "Your admin role does not have permission for this action." }, 403));
     if (action === "admin-view-tab") return audited(req, action, body, () => adminViewTab(body));
@@ -2273,6 +2495,7 @@ export default async (req) => {
     if (action === "admin-delete-score") return audited(req, action, body, () => adminDeleteScore(body));
     if (action === "admin-delete-media") return audited(req, action, body, () => adminDeleteMedia(body));
     if (action === "admin-create-tournament") return audited(req, action, body, () => createTournament(body));
+    if (action === "admin-update-tournament-stages") return audited(req, action, body, () => updateTournamentStages(body));
     if (action === "admin-set-role") return audited(req, action, body, () => setAdminRole(body));
     if (action === "admin-create-role") return audited(req, action, body, () => createAdminRole(body));
     if (action === "admin-update-role") return audited(req, action, body, () => updateAdminRole(body));

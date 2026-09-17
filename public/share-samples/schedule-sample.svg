@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1180" viewBox="0 0 1080 1180">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eef9ff"/><stop offset="1" stop-color="#dfeaf1"/></linearGradient>
+    <style>text{font-family:Inter,Arial,sans-serif} .eyebrow{font-size:16px;font-weight:900;letter-spacing:3px} .title{font-size:40px;font-weight:900} .date{font-size:24px;font-weight:700} .label{font-size:14px;font-weight:900;letter-spacing:1px} .name{font-size:21px;font-weight:900} .meta{font-size:17px;font-weight:800}</style>
+  </defs>
+  <rect width="1080" height="1410" fill="url(#bg)"/>
+  <rect width="1080" height="310" fill="#101418"/>
+  <rect x="72" y="64" width="96" height="96" rx="22" fill="#fff"/>
+  <image href="../assets/kingsmen-logo.png" x="72" y="64" width="96" height="96" preserveAspectRatio="xMidYMid slice"/>
+  <text x="198" y="101" fill="#21d4ff" class="eyebrow">KINGSMEN BADMINTON</text>
+  <text x="198" y="151" fill="#fff" class="title">SESSION SCHEDULE</text>
+  <text x="198" y="197" fill="#bfeeff" class="date">Thursday 17 September</text>
+  <text x="198" y="235" fill="#c8d8df" font-size="17" font-weight="600">9:10 PM first match · 1 minute changeover</text>
+  <rect x="72" y="270" width="936" height="66" rx="16" fill="#173044"/>
+  <text x="102" y="311" fill="#9feaff" class="label">8 MATCHES · COURTS 1 &amp; 2</text>
+
+  <g transform="translate(72 382)"><rect width="456" height="164" rx="20" fill="#e5f5ff"/><text x="24" y="32" fill="#55717e" class="label">MATCH 01</text><text x="24" y="61" fill="#173044" class="meta">9:10–9:22 · COURT 1</text><text x="24" y="103" fill="#101418" class="name">Pavel &amp; Ashik</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Alam &amp; Emon</text></g>
+  <g transform="translate(552 382)"><rect width="456" height="164" rx="20" fill="#eaf8ed"/><text x="24" y="32" fill="#55717e" class="label">MATCH 02</text><text x="24" y="61" fill="#173044" class="meta">9:10–9:22 · COURT 2</text><text x="24" y="103" fill="#101418" class="name">Ayon &amp; Shajib</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Zahir &amp; Kibria</text></g>
+  <g transform="translate(72 568)"><rect width="456" height="164" rx="20" fill="#fff3d8"/><text x="24" y="32" fill="#55717e" class="label">MATCH 03</text><text x="24" y="61" fill="#173044" class="meta">9:23–9:35 · COURT 1</text><text x="24" y="103" fill="#101418" class="name">Rafeed &amp; Harsha</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Palash &amp; Rizvi</text></g>
+  <g transform="translate(552 568)"><rect width="456" height="164" rx="20" fill="#f2eaff"/><text x="24" y="32" fill="#55717e" class="label">MATCH 04</text><text x="24" y="61" fill="#173044" class="meta">9:23–9:35 · COURT 2</text><text x="24" y="103" fill="#101418" class="name">Saad &amp; Shaikat</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Pavel &amp; Ashik</text></g>
+  <g transform="translate(72 754)"><rect width="456" height="164" rx="20" fill="#ffe9ef"/><text x="24" y="32" fill="#55717e" class="label">MATCH 05</text><text x="24" y="61" fill="#173044" class="meta">9:36–9:48 · COURT 1</text><text x="24" y="103" fill="#101418" class="name">Alam &amp; Emon</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Ayon &amp; Shajib</text></g>
+  <g transform="translate(552 754)"><rect width="456" height="164" rx="20" fill="#e5f4f1"/><text x="24" y="32" fill="#55717e" class="label">MATCH 06</text><text x="24" y="61" fill="#173044" class="meta">9:36–9:48 · COURT 2</text><text x="24" y="103" fill="#101418" class="name">Zahir &amp; Kibria</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Rafeed &amp; Harsha</text></g>
+  <g transform="translate(72 940)"><rect width="456" height="164" rx="20" fill="#eef0ff"/><text x="24" y="32" fill="#55717e" class="label">MATCH 07</text><text x="24" y="61" fill="#173044" class="meta">9:49–10:01 · COURT 1</text><text x="24" y="103" fill="#101418" class="name">Palash &amp; Rizvi</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Saad &amp; Shaikat</text></g>
+  <g transform="translate(552 940)"><rect width="456" height="164" rx="20" fill="#edf2f5"/><text x="24" y="32" fill="#55717e" class="label">MATCH 08</text><text x="24" y="61" fill="#173044" class="meta">9:49–10:01 · COURT 2</text><text x="24" y="103" fill="#101418" class="name">Pavel &amp; Ashik</text><text x="228" y="126" fill="#55717e" class="label" text-anchor="middle">VS</text><text x="24" y="151" fill="#101418" class="name">Zahir &amp; Kibria</text></g>
+  <text x="72" y="1147" fill="#55717e" class="label">KINGS MEN SOCIAL · SHARE IN WHATSAPP</text>
+</svg>
