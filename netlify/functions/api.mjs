@@ -1619,16 +1619,19 @@ async function adminSaveMatch(body) {
   return reply({ ok: true });
 }
 
-async function savePairing(body) {
+async function savePairing(body, req) {
   const eventId = String(body.eventId || "");
   const playerId = String(body.playerId || "");
   const pairings = Array.isArray(body.pairings) ? body.pairings.map(pair => Array.isArray(pair) ? pair.filter(Boolean) : []) : [];
-  if (!eventId || !playerId || !pairings.length) return reply({ error: "Add the complete pairing set before saving." }, 400);
+  const adminRequest = isAdmin(req);
+  if (!eventId || (!playerId && !adminRequest) || !pairings.length) return reply({ error: "Add the complete pairing set before saving." }, 400);
   const event = await getEvent(eventId);
   if (!event) return reply({ error: "Event not found." }, 404);
   const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
   const attending = new Set(attendingRows.map(row => row.player_id));
-  if (!attending.has(playerId)) return reply({ error: "Only attendees can edit the pairings." }, 403);
+  if (adminRequest) {
+    if (!await hasAdminPermission(req, "schedule")) return reply({ error: "Your admin role does not have permission to edit pairings." }, 403);
+  } else if (!attending.has(playerId)) return reply({ error: "Only attendees can edit the pairings." }, 403);
   if (pairings.some(pair => pair.length !== 2 || new Set(pair).size !== 2)) return reply({ error: "Each pairing needs two different players." }, 400);
   const allPlayers = pairings.flat();
   if (allPlayers.some(id => !attending.has(id))) return reply({ error: "Choose players marked In for this session." }, 400);
@@ -2592,7 +2595,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "admin-login") return audited(req, action, body, () => adminLogin(body, req));
     if (req.method === "POST" && action === "add-player") return audited(req, action, body, () => addPlayer(body));
     if (req.method === "POST" && action === "player-pin") return audited(req, action, body, () => playerPin(body));
-    if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body));
+    if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body, req));
     if (req.method === "POST" && action === "rebuild-pairings") return audited(req, action, body, () => rebuildPairings(body, req));
     if (req.method === "POST" && action === "push-status") return audited(req, action, body, () => pushStatus(body));
     if (req.method === "POST" && action === "push-subscribe") return audited(req, action, body, () => savePushSubscription(body));
