@@ -152,6 +152,19 @@ async function db(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+async function loadPlayers() {
+  const guestSelect = "id,name,active,pin_hash,is_guest,guest_event_id";
+  try {
+    return await db(`players?select=${guestSelect}&order=name.asc`);
+  } catch (error) {
+    // Keep the existing clubhouse usable while an optional guest migration is pending.
+    // Guest creation remains unavailable until the migration adds these columns.
+    if (!String(error?.message || "").includes("is_guest")) throw error;
+    const rows = await db("players?select=id,name,active,pin_hash&order=name.asc");
+    return (rows || []).map((player) => ({ ...player, is_guest: false, guest_event_id: null }));
+  }
+}
+
 function auditActor(req, action, body) {
   if (action === "admin-login") return { type: "admin", id: body.__adminActorId || playerSession(req)?.playerId || (body.playerPin && body.playerId ? String(body.playerId) : null) };
   if (isAdmin(req)) return { type: "admin", id: adminSession(req)?.playerId || playerSession(req)?.playerId || null };
@@ -910,7 +923,7 @@ async function appState(req) {
   await ensureUpcomingEvents();
   await maintainThursdaySessions();
   const [playerRows, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements, tournamentEntries, tournamentMatches] = await Promise.all([
-    db("players?select=id,name,active,pin_hash,is_guest,guest_event_id&order=name.asc"),
+    loadPlayers(),
     db("events?select=*&order=event_date.asc"),
     db("eois?select=event_id,player_id,status,locked_in,locked_at,penalty_amount,updated_at"),
     db("payments?select=event_id,player_id,amount,paid,paid_at"),
@@ -941,7 +954,7 @@ async function appState(req) {
 
 async function adminState(req) {
   const [rows, roles, roleDefinitions, subscriptions, preferences, announcements] = await Promise.all([
-    db("players?select=id,name,active,pin_hash,is_guest,guest_event_id&order=name.asc"),
+    loadPlayers(),
     db("admin_roles?select=*&order=role,player_id"),
     db("admin_role_definitions?select=*&order=is_system.desc,name.asc"),
     db("push_subscriptions?select=player_id,last_seen_at&order=last_seen_at.desc"),
