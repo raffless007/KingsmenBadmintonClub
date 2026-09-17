@@ -43,6 +43,10 @@ create table if not exists public.events (
   updated_at timestamptz not null default now()
 );
 
+alter table public.players
+  add column if not exists is_guest boolean not null default false,
+  add column if not exists guest_event_id uuid references public.events(id) on delete set null;
+
 create table if not exists public.locations (
   id text primary key,
   name text not null,
@@ -246,6 +250,10 @@ create index if not exists match_scores_event_created_idx
 
 create index if not exists eois_event_status_idx
   on public.eois (event_id, status);
+
+create index if not exists players_guest_event_idx
+  on public.players (guest_event_id, active)
+  where is_guest = true;
 
 create index if not exists media_items_captured_created_idx
   on public.media_items (captured_at desc, created_at desc);

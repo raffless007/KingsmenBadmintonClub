@@ -910,7 +910,7 @@ async function appState(req) {
   await ensureUpcomingEvents();
   await maintainThursdaySessions();
   const [playerRows, events, eois, payments, scores, mediaRows, locations, locationCourtRates, tournaments, waitlist, notificationPreferences, announcements, tournamentEntries, tournamentMatches] = await Promise.all([
-    db("players?select=id,name,active,pin_hash&order=name.asc"),
+    db("players?select=id,name,active,pin_hash,is_guest,guest_event_id&order=name.asc"),
     db("events?select=*&order=event_date.asc"),
     db("eois?select=event_id,player_id,status,locked_in,locked_at,penalty_amount,updated_at"),
     db("payments?select=event_id,player_id,amount,paid,paid_at"),
@@ -941,7 +941,7 @@ async function appState(req) {
 
 async function adminState(req) {
   const [rows, roles, roleDefinitions, subscriptions, preferences, announcements] = await Promise.all([
-    db("players?select=id,name,active,pin_hash&order=name.asc"),
+    db("players?select=id,name,active,pin_hash,is_guest,guest_event_id&order=name.asc"),
     db("admin_roles?select=*&order=role,player_id"),
     db("admin_role_definitions?select=*&order=is_system.desc,name.asc"),
     db("push_subscriptions?select=player_id,last_seen_at&order=last_seen_at.desc"),
@@ -1621,6 +1621,9 @@ async function deleteEvent(body) {
   if (new Date() >= localDateTimeToUtc(event.event_date, eventStartTime(event), event.timezone)) {
     return reply({ error: "Only upcoming events can be deleted from this screen." }, 409);
   }
+  await db(`players?guest_event_id=eq.${encodeURIComponent(body.eventId)}&is_guest=eq.true`, {
+    method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: false }),
+  });
   await db(`events?id=eq.${encodeURIComponent(body.eventId)}`, {
     method: "DELETE",
     headers: { Prefer: "return=minimal" },
@@ -1637,6 +1640,75 @@ async function addPlayer(body) {
   });
   const player = rows?.[0];
   return reply({ ok: true, player: player ? { id: player.id, name: player.name, active: player.active, has_pin: Boolean(player.pin_hash) } : null });
+}
+
+async function addGuest(body) {
+  const eventId = String(body.eventId || "").trim();
+  const rawName = String(body.name || "").replace(/\s*\(guest\)\s*$/i, "").trim();
+  if (!eventId || rawName.length < 2 || rawName.length > 70) return reply({ error: "Enter a valid guest name and choose a session." }, 400);
+  const event = await getEvent(eventId);
+  if (!event) return reply({ error: "Event not found." }, 404);
+  const hours = Number(body.hoursPlayed || eventDurationHours(event));
+  if (!Number.isFinite(hours) || hours <= 0 || hours > 8) return reply({ error: "Enter guest hours between 0 and 8." }, 400);
+  const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
+  if (attendingRows.length >= eventCapacity(event)) return reply({ error: `This session is full at ${eventCapacity(event)} players.` }, 409);
+  const displayName = `${rawName} (Guest)`;
+  const existing = await db(`players?name=eq.${encodeURIComponent(displayName)}&select=id,name,active,is_guest,guest_event_id,pin_hash`);
+  if (existing?.[0]) {
+    if (existing[0].guest_event_id !== eventId) return reply({ error: "A guest with that name already exists. Use a different label for this session." }, 409);
+    await db(`players?id=eq.${encodeURIComponent(existing[0].id)}`, {
+      method: "PATCH", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ active: true, is_guest: true, guest_event_id: eventId, pin_hash: null }),
+    });
+    await db("eois?on_conflict=event_id,player_id", {
+      method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ event_id: eventId, player_id: existing[0].id, status: "yes", locked_in: true, locked_at: new Date().toISOString(), penalty_amount: 0, updated_at: new Date().toISOString() }),
+    });
+    await db("event_player_hours?on_conflict=event_id,player_id", {
+      method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ event_id: eventId, player_id: existing[0].id, hours_played: hours, updated_at: new Date().toISOString() }),
+    });
+    await generateEventSchedule(eventId, { force: true });
+    return reply({ ok: true, guest: { id: existing[0].id, name: displayName, is_guest: true } });
+  }
+  let rows;
+  try {
+    rows = await db("players", {
+      method: "POST", headers: { Prefer: "return=representation" },
+      body: JSON.stringify({ name: displayName, active: true, is_guest: true, guest_event_id: eventId }),
+    });
+  } catch (error) {
+    if (String(error.message).includes("duplicate key")) return reply({ error: "A player or guest with that name already exists." }, 409);
+    throw error;
+  }
+  const guest = rows?.[0];
+  if (!guest) return reply({ error: "Guest could not be created." }, 500);
+  await db("eois?on_conflict=event_id,player_id", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ event_id: eventId, player_id: guest.id, status: "yes", locked_in: true, locked_at: new Date().toISOString(), penalty_amount: 0, updated_at: new Date().toISOString() }),
+  });
+  await db("event_player_hours?on_conflict=event_id,player_id", {
+    method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({ event_id: eventId, player_id: guest.id, hours_played: hours, updated_at: new Date().toISOString() }),
+  });
+  await generateEventSchedule(eventId, { force: true });
+  return reply({ ok: true, guest: { id: guest.id, name: displayName, is_guest: true } });
+}
+
+async function removeGuest(body) {
+  const eventId = String(body.eventId || "").trim();
+  const playerId = String(body.playerId || "").trim();
+  if (!eventId || !playerId) return reply({ error: "Guest or event not found." }, 400);
+  const rows = await db(`players?id=eq.${encodeURIComponent(playerId)}&guest_event_id=eq.${encodeURIComponent(eventId)}&is_guest=eq.true&select=id,name`);
+  if (!rows?.[0]) return reply({ error: "Guest not found for this session." }, 404);
+  await Promise.all([
+    db(`eois?event_id=eq.${encodeURIComponent(eventId)}&player_id=eq.${encodeURIComponent(playerId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
+    db(`payments?event_id=eq.${encodeURIComponent(eventId)}&player_id=eq.${encodeURIComponent(playerId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
+    db(`event_player_hours?event_id=eq.${encodeURIComponent(eventId)}&player_id=eq.${encodeURIComponent(playerId)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
+    db(`players?id=eq.${encodeURIComponent(playerId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ active: false }) }),
+  ]);
+  await generateEventSchedule(eventId, { force: true });
+  return reply({ ok: true });
 }
 
 async function playerPin(body) {
@@ -2120,6 +2192,8 @@ async function adminSetEoi(body) {
   await lockDueThursdayEois(event);
   const currentRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}&select=*`);
   const current = currentRows?.[0];
+  const playerRows = await db(`players?id=eq.${encodeURIComponent(body.playerId)}&select=is_guest`);
+  const isGuest = Boolean(playerRows?.[0]?.is_guest);
   if (body.status === "none") {
     await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}`, {
       method: "DELETE", headers: { Prefer: "return=minimal" },
@@ -2132,7 +2206,7 @@ async function adminSetEoi(body) {
   let penaltyAmount = Number(current?.penalty_amount || 0);
   let lockedIn = Boolean(current?.locked_in);
   let lockedAt = current?.locked_at || null;
-  if (body.status === "no" && current?.status === "yes" && (lockedIn || (isThursdayEvent(event) && new Date() >= thursdayLockAt(event)))) {
+  if (!isGuest && body.status === "no" && current?.status === "yes" && (lockedIn || (isThursdayEvent(event) && new Date() >= thursdayLockAt(event)))) {
     const lockedRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&locked_in=eq.true&select=player_id`);
     const lockedCount = Math.max(lockedRows.length, 1);
     penaltyAmount = Number((totalCourtFee(event) / lockedCount).toFixed(2));
@@ -2466,7 +2540,7 @@ export default async (req) => {
       });
     }
 
-    if (!["view-tab", "admin-view-tab", "admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-update-tournament-stages", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
+    if (!["view-tab", "admin-view-tab", "admin-change-passcode", "admin-save-event", "admin-generate-schedule", "admin-save-match", "admin-delete-event", "admin-add-player", "admin-update-player", "admin-remove-player", "admin-reset-player-pin", "admin-set-eoi", "admin-add-guest", "admin-remove-guest", "admin-set-payment", "admin-set-hours", "admin-delete-score", "admin-delete-media", "admin-create-tournament", "admin-update-tournament-stages", "admin-set-role", "admin-create-role", "admin-update-role", "admin-delete-role", "admin-revert-audit", "admin-create-announcement", "admin-update-announcement", "admin-delete-announcement", "admin-generate-tournament-draw", "admin-save-tournament-match"].includes(action)) {
       return reply({ error: "Unknown action." }, 404);
     }
     if (!isAdmin(req)) return audited(req, action, body, async () => reply({ error: "Admin session expired." }, 401));
@@ -2475,7 +2549,7 @@ export default async (req) => {
     }
     const permissionForAction = {
       "admin-save-event": "events", "admin-delete-event": "events", "admin-generate-schedule": "schedule", "admin-save-match": "schedule",
-      "admin-set-eoi": "eoi", "admin-set-payment": "money", "admin-set-hours": "money", "admin-delete-score": "scores", "admin-create-tournament": "tournaments",
+      "admin-set-eoi": "eoi", "admin-add-guest": "eoi", "admin-remove-guest": "eoi", "admin-set-payment": "money", "admin-set-hours": "money", "admin-delete-score": "scores", "admin-create-tournament": "tournaments",
       "admin-generate-tournament-draw": "tournaments", "admin-update-tournament-stages": "tournaments", "admin-save-tournament-match": "scores", "admin-create-announcement": "announcements", "admin-update-announcement": "announcements", "admin-delete-announcement": "announcements", "admin-set-role": "roles", "admin-create-role": "roles", "admin-update-role": "roles", "admin-delete-role": "roles", "admin-revert-audit": "audit", "admin-delete-media": "media",
     }[action];
     if (permissionForAction && !await hasAdminPermission(req, permissionForAction)) return audited(req, action, body, async () => reply({ error: "Your admin role does not have permission for this action." }, 403));
@@ -2490,6 +2564,8 @@ export default async (req) => {
     if (action === "admin-remove-player") return audited(req, action, body, () => removePlayer(body));
     if (action === "admin-reset-player-pin") return audited(req, action, body, () => resetPlayerPin(body));
     if (action === "admin-set-eoi") return audited(req, action, body, () => adminSetEoi(body));
+    if (action === "admin-add-guest") return audited(req, action, body, () => addGuest(body));
+    if (action === "admin-remove-guest") return audited(req, action, body, () => removeGuest(body));
     if (action === "admin-set-payment") return audited(req, action, body, () => adminSetPayment(body));
     if (action === "admin-set-hours") return audited(req, action, body, () => adminSetPlayerHours(body));
     if (action === "admin-delete-score") return audited(req, action, body, () => adminDeleteScore(body));
