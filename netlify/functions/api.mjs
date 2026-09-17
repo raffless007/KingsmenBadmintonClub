@@ -1639,6 +1639,58 @@ async function savePairing(body) {
   return reply({ ok: true, updated: pairings.length, pairings, scores, scheduleUpdated: schedule.saved });
 }
 
+function randomPairings(playerIds, previousPairings = []) {
+  const ids = [...playerIds];
+  const previous = new Set(previousPairings.map(pair => [...pair].sort().join(":")));
+  let best = null;
+  let bestOverlap = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const shuffled = [...ids];
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+    }
+    const pairings = [];
+    for (let index = 0; index < shuffled.length; index += 2) pairings.push([shuffled[index], shuffled[index + 1]]);
+    const overlap = pairings.filter(pair => previous.has([...pair].sort().join(":"))).length;
+    if (overlap < bestOverlap) {
+      best = pairings;
+      bestOverlap = overlap;
+    }
+    if (overlap === 0) break;
+  }
+  return best;
+}
+
+async function rebuildPairings(body, req) {
+  const eventId = String(body.eventId || "");
+  const playerId = String(body.playerId || "");
+  const adminRequest = isAdmin(req);
+  if (!eventId || (!playerId && !adminRequest)) return reply({ error: "Choose a session and sign in first." }, 400);
+  const event = await getEvent(eventId);
+  if (!event) return reply({ error: "Event not found." }, 404);
+
+  const attendingRows = await db(`eois?event_id=eq.${encodeURIComponent(eventId)}&status=eq.yes&select=player_id`);
+  const attendingIds = attendingRows.map(row => row.player_id).filter(Boolean);
+  if (attendingIds.length < 4 || attendingIds.length % 2 !== 0) {
+    return reply({ error: "Pairings need an even number of at least four players marked In." }, 400);
+  }
+
+  if (adminRequest) {
+    if (!await hasAdminPermission(req, "schedule")) return reply({ error: "Your admin role does not have permission to rebuild pairings." }, 403);
+  } else if (!attendingIds.includes(playerId)) {
+    return reply({ error: "Only attendees can rebuild the pairings." }, 403);
+  }
+
+  const existing = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=team_a_player_ids,team_b_player_ids`);
+  const previous = existing.flatMap(row => [row.team_a_player_ids, row.team_b_player_ids]).filter(pair => Array.isArray(pair) && pair.length === 2);
+  const pairings = randomPairings(attendingIds, previous);
+  await saveEventPairings(eventId, pairings);
+  const schedule = await generateEventSchedule(eventId, { force: true });
+  const scores = await db(`match_scores?event_id=eq.${encodeURIComponent(eventId)}&select=*&order=match_number.asc`);
+  return reply({ ok: true, updated: pairings.length, pairings, scores, scheduleUpdated: schedule.saved });
+}
+
 async function deleteEvent(body) {
   if (!body.eventId) return reply({ error: "Event not found." }, 404);
   const event = await getEvent(body.eventId);
@@ -2517,6 +2569,7 @@ export default async (req) => {
       "media-upload-url": body.playerId,
       "media-finalize": body.playerId,
       "save-pairing": body.playerId,
+      "rebuild-pairings": body.playerId,
       "push-subscribe": body.playerId,
       "push-status": body.playerId,
       "push-unsubscribe": body.playerId,
@@ -2540,6 +2593,7 @@ export default async (req) => {
     if (req.method === "POST" && action === "add-player") return audited(req, action, body, () => addPlayer(body));
     if (req.method === "POST" && action === "player-pin") return audited(req, action, body, () => playerPin(body));
     if (req.method === "POST" && action === "save-pairing") return audited(req, action, body, () => savePairing(body));
+    if (req.method === "POST" && action === "rebuild-pairings") return audited(req, action, body, () => rebuildPairings(body, req));
     if (req.method === "POST" && action === "push-status") return audited(req, action, body, () => pushStatus(body));
     if (req.method === "POST" && action === "push-subscribe") return audited(req, action, body, () => savePushSubscription(body));
     if (req.method === "POST" && action === "push-unsubscribe") return audited(req, action, body, () => removePushSubscription(body));
