@@ -165,6 +165,17 @@ async function loadPlayers() {
   }
 }
 
+async function playerIsGuest(playerId) {
+  try {
+    const rows = await db(`players?id=eq.${encodeURIComponent(playerId)}&select=is_guest`);
+    return Boolean(rows?.[0]?.is_guest);
+  } catch (error) {
+    // The guest columns are optional until migration 023 is applied.
+    if (String(error?.message || "").includes("is_guest")) return false;
+    throw error;
+  }
+}
+
 function auditActor(req, action, body) {
   if (action === "admin-login") return { type: "admin", id: body.__adminActorId || playerSession(req)?.playerId || (body.playerPin && body.playerId ? String(body.playerId) : null) };
   if (isAdmin(req)) return { type: "admin", id: adminSession(req)?.playerId || playerSession(req)?.playerId || null };
@@ -2205,8 +2216,7 @@ async function adminSetEoi(body) {
   await lockDueThursdayEois(event);
   const currentRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}&select=*`);
   const current = currentRows?.[0];
-  const playerRows = await db(`players?id=eq.${encodeURIComponent(body.playerId)}&select=is_guest`);
-  const isGuest = Boolean(playerRows?.[0]?.is_guest);
+  const isGuest = await playerIsGuest(body.playerId);
   if (body.status === "none") {
     await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&player_id=eq.${encodeURIComponent(body.playerId)}`, {
       method: "DELETE", headers: { Prefer: "return=minimal" },
