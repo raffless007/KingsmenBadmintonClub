@@ -202,6 +202,7 @@ function auditDetails(body) {
     "announcementId", "matchId", "locationId", "role", "partnerPlayerId", "position", "urgent", "audience", "targetPlayerCount",
     "courtCount", "matchMinutes", "changeoverMinutes", "entryFee", "kind", "title",
     "adminTab", "tab", "tabLabel", "page", "pageLabel", "section", "sectionLabel",
+    "applyPenalty",
   ];
   for (const key of scalarKeys) {
     if (body[key] !== undefined && body[key] !== null && body[key] !== "") details[key] = body[key];
@@ -2229,7 +2230,7 @@ async function adminSetEoi(body) {
   let penaltyAmount = Number(current?.penalty_amount || 0);
   let lockedIn = Boolean(current?.locked_in);
   let lockedAt = current?.locked_at || null;
-  if (!isGuest && body.status === "no" && current?.status === "yes" && (lockedIn || (isThursdayEvent(event) && new Date() >= thursdayLockAt(event)))) {
+  if (!isGuest && body.status === "no" && body.applyPenalty !== false && current?.status === "yes" && (lockedIn || (isThursdayEvent(event) && new Date() >= thursdayLockAt(event)))) {
     const lockedRows = await db(`eois?event_id=eq.${encodeURIComponent(body.eventId)}&status=eq.yes&locked_in=eq.true&select=player_id`);
     const lockedCount = Math.max(lockedRows.length, 1);
     penaltyAmount = Number((totalCourtFee(event) / lockedCount).toFixed(2));
