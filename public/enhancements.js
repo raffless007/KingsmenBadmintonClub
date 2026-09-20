@@ -3,7 +3,7 @@
 
   const API = "/.netlify/functions/api";
   const queueKey = "kbc-live-score-queue";
-  const enhancement = { installed: false, originalRender: null, supabase: null, channel: null, pollTimer: null, alertPollTimer: null, flushing: false, adminRoles: [], adminAnnouncements: [], roleLoginPlayers: null, roleLoginPlayersLoading: false, tournamentStageDrafts: new Map(), tournamentStageTournamentId: null, lastAdminTab: null };
+  const enhancement = { installed: false, originalRender: null, supabase: null, channel: null, pollTimer: null, alertPollTimer: null, flushing: false, adminRoles: [], adminAnnouncements: [], notificationDelivery: [], roleLoginPlayers: null, roleLoginPlayersLoading: false, tournamentStageDrafts: new Map(), tournamentStageTournamentId: null, lastAdminTab: null };
   const $ = (id) => document.getElementById(id);
   const evalGlobal = (name) => {
     try { return window[name] || window.eval(name); } catch { return undefined; }
@@ -150,8 +150,8 @@
     const current = evalGlobal("queueLiveAction");
     if (!current || current.__kbcEnhanced) return;
     const enhanced = (score, action, extra = {}) => {
-      const body = { scoreId: score.id, playerId: playerId(), action, ...extra, clientActionId: crypto.randomUUID() };
       const queue = readQueue();
+      const body = { scoreId: score.id, playerId: playerId(), action, ...extra, clientActionId: crypto.randomUUID(), expectedRevision: queue.length ? undefined : score.revision };
       queue.push(body);
       writeQueue(queue);
       flushQueue();
@@ -290,7 +290,12 @@
     const selectedId = enhancement.tournamentStageTournamentId && tournaments.some((tournament) => tournament.id === enhancement.tournamentStageTournamentId) ? enhancement.tournamentStageTournamentId : tournaments[0].id;
     enhancement.tournamentStageTournamentId = selectedId;
     const selectedTournament = tournaments.find((tournament) => tournament.id === selectedId);
-    if (!enhancement.tournamentStageDrafts.has(selectedId)) enhancement.tournamentStageDrafts.set(selectedId, tournamentStageClone(Array.isArray(selectedTournament.stage_config) && selectedTournament.stage_config.length ? selectedTournament.stage_config : customTournamentStages()));
+    if (!enhancement.tournamentStageDrafts.has(selectedId)) {
+      let savedDraft = null;
+      try { savedDraft = JSON.parse(localStorage.getItem(`kbc-tournament-draft-${selectedId}`) || "null"); } catch { savedDraft = null; }
+      const seed = Array.isArray(savedDraft?.stages) && savedDraft.stages.length ? savedDraft.stages : (Array.isArray(selectedTournament.stage_config) && selectedTournament.stage_config.length ? selectedTournament.stage_config : customTournamentStages());
+      enhancement.tournamentStageDrafts.set(selectedId, tournamentStageClone(seed));
+    }
     let stages = enhancement.tournamentStageDrafts.get(selectedId);
     const builder = document.createElement("article");
     builder.id = "kbcTournamentStageBuilder";
@@ -302,7 +307,7 @@
     $("kbcStageTournament").onchange = (event) => { enhancement.tournamentStageTournamentId = event.target.value; redraw(); };
     $("kbcApplyStageTemplate").onclick = () => { stages = $("kbcStageTemplate").value === "bangladeshi-open" ? bangladeshiOpenStages() : customTournamentStages(); enhancement.tournamentStageDrafts.set(selectedId, stages); redraw(); };
     $("kbcAddStage").onclick = () => { stages = readTournamentStageDraft(builder, stages); stages.push({ id: tournamentStageId(`stage-${stages.length + 1}`, `stage-${stages.length + 1}`), name: `Knockout phase ${stages.length + 1}`, type: "knockout", tier: "custom", pointCap: 21, pointDifferential: 2, bestOf: 3, groupCount: 1, teamsPerGroup: null, qualificationRules: [], bracketSize: 2, bracketMatches: [{ matchNumber: 1, sourceA: "Previous stage winner", sourceB: "Previous stage winner", nextStageKey: "", nextMatchNumber: null }] }); enhancement.tournamentStageDrafts.set(selectedId, stages); redraw(); };
-    $("kbcSaveStages").onclick = async () => { const nextStages = readTournamentStageDraft(builder, stages); if (!nextStages.length) return notify("Add at least one tournament stage"); if (nextStages.some((stage) => !stage.name.trim())) return notify("Every stage needs a name"); try { await request()("admin-update-tournament-stages", "POST", { tournamentId: selectedId, stageConfig: nextStages }, true); enhancement.tournamentStageDrafts.set(selectedId, nextStages); notify("Tournament stage setup saved"); await refresh(); } catch (error) { notify(error.message); } };
+    $("kbcSaveStages").onclick = async () => { const nextStages = readTournamentStageDraft(builder, stages); if (!nextStages.length) return notify("Add at least one tournament stage"); if (nextStages.some((stage) => !stage.name.trim())) return notify("Every stage needs a name"); try { await request()("admin-update-tournament-stages", "POST", { tournamentId: selectedId, stageConfig: nextStages }, true); enhancement.tournamentStageDrafts.set(selectedId, nextStages); localStorage.removeItem(`kbc-tournament-draft-${selectedId}`); notify("Tournament stage setup saved"); await refresh(); } catch (error) { notify(error.message); } };
     builder.querySelectorAll('[data-kbc-stage-field="type"]').forEach((select) => select.onchange = () => { stages = readTournamentStageDraft(builder, stages); const stageIndex = Number(select.closest("[data-kbc-stage-index]").dataset.kbcStageIndex); stages[stageIndex].type = select.value; if (select.value === "knockout" && !stages[stageIndex].bracketMatches.length) stages[stageIndex].bracketMatches = bracketRows(1, "Source"); enhancement.tournamentStageDrafts.set(selectedId, stages); redraw(); });
     builder.querySelectorAll("[data-kbc-remove-stage]").forEach((button) => button.onclick = () => { if (stages.length <= 1) return notify("Keep at least one tournament stage"); stages = readTournamentStageDraft(builder, stages).filter((_, index) => index !== Number(button.dataset.kbcRemoveStage)); enhancement.tournamentStageDrafts.set(selectedId, stages); redraw(); });
     builder.querySelectorAll("[data-kbc-add-qualification]").forEach((button) => button.onclick = () => { stages = readTournamentStageDraft(builder, stages); stages[Number(button.closest("[data-kbc-stage-index]").dataset.kbcStageIndex)].qualificationRules.push({ from: 1, to: 1, destinationStage: "", path: "" }); enhancement.tournamentStageDrafts.set(selectedId, stages); redraw(); });
@@ -396,6 +401,7 @@
       const result = await request()("admin-state", "GET", null, true);
       enhancement.adminRoles = result.roles || [];
       enhancement.adminAnnouncements = result.announcements || [];
+      enhancement.notificationDelivery = result.notificationDelivery || [];
       const players = result.players || [];
       const definitions = (result.roleDefinitions || []).filter((role) => role.active);
       const canManage = Boolean(result.canManageRoles);
@@ -420,6 +426,7 @@
       const assignedCards = assigned.map((role) => { const player = players.find((item) => item.id === role.player_id); const name = player?.name || role.player_id; const roleName = definitions.find((definition) => definition.slug === role.role)?.name || role.role; return `<div class="kbc-assigned-role"><div class="kbc-assigned-person"><span class="kbc-assigned-avatar">${esc(String(name).charAt(0).toUpperCase())}</span><div><strong>${esc(name)}</strong><small>Assigned admin role</small></div></div><span class="kbc-role-bubble">${esc(roleName)}</span><button class="secondary kbc-delete" data-kbc-revoke-role="${role.player_id}">Revoke</button></div>`; }).join("");
       target.innerHTML = `${canManage ? `<form id="kbcRoleForm"><div class="formgrid"><label><span class="label">ROLE NAME</span><input class="control" id="kbcRoleName" required maxlength="60" placeholder="Tournament coordinator"></label><label><span class="label">DESCRIPTION</span><input class="control" id="kbcRoleDescription" maxlength="240" placeholder="What this role is responsible for"></label></div><p class="label" style="margin-top:12px">ACCESS TO APP FUNCTIONS</p>${permissionChecks()}<div class="actions"><button class="secondary" type="button" id="kbcCancelRoleEdit" style="display:none">Cancel edit</button><button class="primary" type="submit" id="kbcSaveRole">Create role</button></div></form>` : `<p class="kbc-muted">Your current admin role can use the functions shown below, but only the owner can create, edit, delete, or assign roles.</p>`}<div style="margin-top:18px"><p class="eyebrow">ROLE CATALOGUE</p>${roleCards || `<p class="kbc-muted">No active roles have been configured.</p>`}</div>${canManage ? `<div style="margin-top:20px"><p class="eyebrow">ASSIGN A ROLE</p><div class="kbc-role-grid"><select class="control" id="kbcRolePlayer"><option value="">Choose player</option>${players.filter((player) => player.active).map((player) => `<option value="${player.id}">${esc(player.name)}</option>`).join("")}</select><select class="control" id="kbcRoleValue"><option value="">Choose role</option>${roleOptions}</select><button class="secondary" id="kbcAssignRole">Assign</button></div><div class="kbc-assigned-roles"><p class="label">ASSIGNED ROLES</p>${assigned.length ? assignedCards : `<p class="kbc-muted">No player roles are assigned.</p>`}</div></div>` : ""}`;
       renderAdminAnnouncementHistory();
+      renderAdminDeliveryHistory();
       if (!canManage) return;
       let editingSlug = null;
       const setForm = (role) => { editingSlug = role?.slug || null; $("kbcRoleName").value = role?.name || ""; $("kbcRoleDescription").value = role?.description || ""; target.querySelectorAll("[data-kbc-permission]").forEach((input) => { input.checked = (role?.permissions || []).includes(input.dataset.kbcPermission); }); $("kbcSaveRole").textContent = role ? "Save role" : "Create role"; $("kbcCancelRoleEdit").style.display = role ? "" : "none"; if (role) $("kbcRoleName").focus(); };
@@ -430,6 +437,17 @@
       $("kbcAssignRole").onclick = async () => { if (!$("kbcRolePlayer").value || !$("kbcRoleValue").value) return notify("Choose a player and role"); try { await request()("admin-set-role", "POST", { playerId: $("kbcRolePlayer").value, role: $("kbcRoleValue").value, active: true }, true); notify("Admin role assigned"); await refresh(); renderAdminRoles(); } catch (error) { notify(error.message); } };
       target.querySelectorAll("[data-kbc-revoke-role]").forEach((button) => button.onclick = async () => { try { const current = assigned.find((role) => role.player_id === button.dataset.kbcRevokeRole); await request()("admin-set-role", "POST", { playerId: button.dataset.kbcRevokeRole, role: current.role, active: false }, true); notify("Admin role revoked"); await refresh(); renderAdminRoles(); } catch (error) { notify(error.message); } });
     } catch (error) { target.innerHTML = `<p class="error">${esc(error.message)}</p>`; }
+  }
+
+  function renderAdminDeliveryHistory() {
+    const communications = $("communicationsPanel");
+    if (!communications || !adminToken() || communications.querySelector("#kbcNotificationDelivery")) return;
+    const rows = enhancement.notificationDelivery || [];
+    const card = document.createElement("article");
+    card.id = "kbcNotificationDelivery";
+    card.className = "card kbc-enhancement kbc-delivery-card";
+    card.innerHTML = `<p class="eyebrow">DELIVERY HEALTH</p><h3>Recent notification deliveries</h3><p class="kbc-muted">Push delivery is best-effort. In-app urgent alerts remain available when a device is unavailable.</p>${rows.length ? `<div class="kbc-delivery-list">${rows.slice(0, 20).map((row) => { const player = playerName(row.player_id); return `<div class="kbc-delivery-row"><div><strong>${esc(player)}</strong><small>${esc(row.kind || "club update")} · ${new Date(row.created_at).toLocaleString("en-AU")}</small></div><span class="kbc-chip ${row.succeeded ? "" : "danger"}">${row.succeeded ? "Delivered" : "Failed"}</span></div>`; }).join("")}</div>` : `<p class="kbc-muted" style="margin-top:12px">No push delivery attempts have been recorded.</p>`}`;
+    communications.appendChild(card);
   }
 
   function auditEvent(log) {
@@ -640,6 +658,136 @@
     try { await request()("admin-view-tab", "POST", { adminTab: tab }, true); } catch { /* Audit telemetry must never interrupt navigation. */ }
   }
 
+  function selectedEvent() {
+    try { return window.eval("upcoming()[selected]") || state().events?.[0]; } catch { return state().events?.[0]; }
+  }
+
+  function renderPlayCockpit() {
+    const page = $("playPage");
+    const event = selectedEvent();
+    if (!page || !event) return;
+    let cockpit = $("kbcPlayCockpit");
+    if (!cockpit) { cockpit = document.createElement("article"); cockpit.id = "kbcPlayCockpit"; cockpit.className = "card kbc-play-cockpit"; page.querySelector(".grid")?.before(cockpit); }
+    const current = state();
+    const confirmed = (current.eois || []).filter((row) => row.event_id === event.id && row.status === "yes").length;
+    const capacity = event.court_3_enabled ? 14 : 12;
+    const mine = current.eois?.find((row) => row.event_id === event.id && row.player_id === playerId());
+    const waitlist = current.waitlist?.filter((row) => row.event_id === event.id && row.status === "pending").length || 0;
+    const start = event.start_time?.slice(0, 5) || "21:00";
+    const venue = `${event.location || "Venue"}${event.suburb ? ` · ${event.suburb}` : ""}`;
+    cockpit.innerHTML = `<div><p class="eyebrow">SESSION SNAPSHOT</p><h3>${esc(venue)}</h3><p class="kbc-muted">${esc(start)}–${esc((event.end_time || "23:00").slice(0, 5))} · ${confirmed}/${capacity} places confirmed${waitlist ? ` · ${waitlist} waitlisted` : ""}</p></div><div class="kbc-cockpit-status"><strong>${mine?.status === "yes" ? "You are In" : mine?.status === "no" ? "You are Out" : "Response needed"}</strong><small>${mine?.locked_in ? "Locked in for this session" : "Attendance can be updated from the session card"}</small></div>`;
+  }
+
+  function renderEoiClarity() {
+    const response = document.querySelector("#playPage .response");
+    const event = selectedEvent();
+    if (!response || !event) return;
+    let note = response.querySelector(".kbc-eoi-rules");
+    if (!note) { note = document.createElement("p"); note.className = "kbc-eoi-rules kbc-muted"; response.appendChild(note); }
+    const isThursday = new Date(`${event.event_date}T12:00:00Z`).getUTCDay() === 4;
+    note.innerHTML = isThursday
+      ? "Thursday rules: confirmed players lock at Tuesday 8:00 PM. New responses close Thursday at 12:00 PM, or earlier once the session is full. Admin can make exceptions."
+      : "This session remains open until six hours before first serve. Admin can change the deadline if court availability changes.";
+  }
+
+  function markNextMatch() {
+    const cards = [...document.querySelectorAll("#scheduleSection .schedule-card")];
+    cards.forEach((card) => {
+      card.classList.remove("kbc-next-match");
+      card.querySelector(".kbc-next-label")?.remove();
+    });
+    const next = cards.find((card) => !card.classList.contains("completed") && !card.classList.contains("live-now"));
+    if (!next) return;
+    next.classList.add("kbc-next-match");
+    const top = next.querySelector(".schedule-card-top");
+    if (top) {
+      const label = document.createElement("span");
+      label.className = "kbc-next-label";
+      label.textContent = "NEXT UP";
+      top.appendChild(label);
+    }
+  }
+
+  function renderAdminOperations() {
+    const settings = $("settingsPanel");
+    if (!settings || !adminToken() || settings.querySelector("#kbcAdminOperations")) return;
+    const card = document.createElement("article");
+    card.id = "kbcAdminOperations";
+    card.className = "card kbc-admin-tools kbc-operations-card";
+    card.innerHTML = `<div><p class="eyebrow">OPERATIONS</p><h3>System health and data export</h3><p class="kbc-muted">Use these checks after a deployment or before a major club-data change.</p></div><div class="actions kbc-operation-actions"><button type="button" class="secondary" id="kbcHealthCheck">Check system health</button><button type="button" class="secondary" id="kbcExportData">Download club data</button></div><p id="kbcHealthResult" class="kbc-muted" aria-live="polite"></p>`;
+    settings.appendChild(card);
+    $("kbcHealthCheck").onclick = async () => { const result = $("kbcHealthResult"); result.textContent = "Checking…"; try { const response = await fetch(`${API}?action=health`, { cache: "no-store" }); const json = await response.json(); result.textContent = json.ok ? `Healthy · version ${json.appVersion} · ${new Date(json.serverNow).toLocaleString("en-AU")}` : "Configuration needs attention."; } catch (error) { result.textContent = error.message; } };
+    $("kbcExportData").onclick = async () => { const button = $("kbcExportData"); button.disabled = true; try { const exportData = await request()("admin-export", "GET", null, true); const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `kingsmen-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify("Club data export downloaded"); } catch (error) { notify(error.message); } finally { button.disabled = false; } };
+  }
+
+  function renderAuditFilters() {
+    const panel = $("auditLogPanel");
+    const section = panel?.querySelector("#kbcAuditPlainEnglish");
+    const grid = section?.querySelector(".kbc-audit-grid");
+    const logs = (() => { try { return window.eval("adminAuditLogs") || []; } catch { return []; } })();
+    if (!section || !grid || section.querySelector("#kbcAuditFilters")) return;
+    const actors = [...new Set(logs.map((log) => log.actor_name || (log.actor_type === "anonymous" ? "Visitor" : "Unidentified admin")))].sort();
+    const actions = [...new Set(logs.map((log) => log.action).filter(Boolean))].sort();
+    const toolbar = document.createElement("div");
+    toolbar.id = "kbcAuditFilters";
+    toolbar.className = "kbc-audit-filters";
+    toolbar.innerHTML = `<input class="control" id="kbcAuditSearch" placeholder="Search activity" aria-label="Search activity audit log"><select class="control" id="kbcAuditActor"><option value="">All users</option>${actors.map((actor) => `<option>${esc(actor)}</option>`).join("")}</select><select class="control" id="kbcAuditAction"><option value="">All actions</option>${actions.map((action) => `<option value="${esc(action)}">${esc(action.replaceAll("-", " "))}</option>`).join("")}</select><label class="kbc-audit-failed"><input type="checkbox" id="kbcAuditFailed"> Failed only</label>`;
+    section.querySelector(".kbc-audit-grid")?.before(toolbar);
+    const apply = () => { const search = $("kbcAuditSearch").value.toLowerCase(); const actor = $("kbcAuditActor").value; const action = $("kbcAuditAction").value; const failed = $("kbcAuditFailed").checked; [...grid.children].forEach((card, index) => { const log = logs[index]; const text = card.textContent.toLowerCase(); card.classList.toggle("hidden", Boolean(search && !text.includes(search)) || Boolean(actor && (log?.actor_name || (log?.actor_type === "anonymous" ? "Visitor" : "Unidentified admin")) !== actor) || Boolean(action && log?.action !== action) || (failed && log?.succeeded)); }); };
+    ["kbcAuditSearch", "kbcAuditActor", "kbcAuditAction", "kbcAuditFailed"].forEach((id) => $(id)?.addEventListener("input", apply));
+  }
+
+  function renderTournamentPreview() {
+    const builder = $("kbcTournamentStageBuilder");
+    if (!builder || builder.querySelector("#kbcBracketPreview")) return;
+    const tournament = state().tournaments?.find((item) => item.id === enhancement.tournamentStageTournamentId) || state().tournaments?.[0];
+    const stages = Array.isArray(tournament?.stage_config) ? tournament.stage_config : [];
+    const preview = document.createElement("article");
+    preview.id = "kbcBracketPreview";
+    preview.className = "card kbc-bracket-preview";
+    preview.innerHTML = `<p class="eyebrow">BRACKET PREVIEW</p><h3>Published flow</h3><p class="kbc-muted">A quick read-only view of how each stage feeds the next stage.</p><div class="kbc-preview-flow">${stages.map((stage, index) => `<div class="kbc-preview-stage"><strong>${esc(stage.name || `Stage ${index + 1}`)}</strong><small>${esc(stage.type || "knockout")} · ${stage.bestOf === 3 ? "Best of 3" : "1 game"} · ${stage.pointCap || 21} points</small><span>${Array.isArray(stage.qualificationRules) && stage.qualificationRules.length ? `${stage.qualificationRules.length} qualification rule${stage.qualificationRules.length === 1 ? "" : "s"}` : "Manual entry"}</span></div>${index < stages.length - 1 ? `<span class="kbc-preview-arrow" aria-hidden="true">→</span>` : ""}`).join("") || `<p class="kbc-muted">Save a stage setup to preview the bracket flow.</p>`}</div>`;
+    builder.appendChild(preview);
+  }
+
+  function installTournamentAutosave() {
+    const builder = $("kbcTournamentStageBuilder");
+    if (!builder || builder.dataset.autosaveInstalled) return;
+    builder.dataset.autosaveInstalled = "true";
+    builder.addEventListener("input", () => {
+      try { localStorage.setItem(`kbc-tournament-draft-${enhancement.tournamentStageTournamentId}`, JSON.stringify({ savedAt: new Date().toISOString(), stages: readTournamentStageDraft(builder, enhancement.tournamentStageDrafts.get(enhancement.tournamentStageTournamentId) || []) })); } catch { /* Storage is optional. */ }
+    });
+  }
+
+  function installMediaQualityChecks() {
+    const input = $("mediaFile");
+    if (!input || input.dataset.qualityChecks) return;
+    input.dataset.qualityChecks = "true";
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      const progress = $("uploadProgress");
+      if (!file) return;
+      if (!/^(image|video)\//.test(file.type)) { input.value = ""; if (progress) progress.textContent = "Choose an image or video file."; return; }
+      if (file.size > 200 * 1024 * 1024) { input.value = ""; if (progress) progress.textContent = "Media files must be 200 MB or smaller."; return; }
+      if (progress) progress.textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB ready to upload`;
+    });
+  }
+
+  function installCalendarLinks() {
+    const button = document.querySelector(".kbc-calendar");
+    const event = selectedEvent();
+    if (!button || !event || button.parentElement?.querySelector(".kbc-calendar-links")) return;
+    const compact = (value) => String(value || "21:00:00").slice(0, 5).replace(":", "") + "00";
+    const date = String(event.event_date || "").replaceAll("-", "");
+    const start = `${date}T${compact(event.start_time)}`;
+    const end = `${date}T${compact(event.end_time)}`;
+    const summary = encodeURIComponent("Kingsmen Badminton");
+    const location = encodeURIComponent(`${event.location || ""}${event.suburb ? `, ${event.suburb}` : ""}`);
+    const links = document.createElement("span");
+    links.className = "kbc-calendar-links";
+    links.innerHTML = `<a href="https://calendar.google.com/calendar/render?action=TEMPLATE&text=${summary}&dates=${start}/${end}&location=${location}" target="_blank" rel="noreferrer">Google</a><a href="https://outlook.live.com/calendar/0/deeplink/compose?subject=${summary}&startdt=${encodeURIComponent(`${event.event_date}T${event.start_time || "21:00"}`)}&enddt=${encodeURIComponent(`${event.event_date}T${event.end_time || "23:00"}`)}&location=${location}" target="_blank" rel="noreferrer">Outlook</a>`;
+    button.after(links);
+  }
+
   function enhanceRender() {
     injectStyles();
     const activeAdminTab = document.querySelector("#adminPage .tabs [data-tab].active");
@@ -660,6 +808,15 @@
     renderAdminEnhancements();
     renderAdminRoleLogin();
     renderAuditEnhancements();
+    renderPlayCockpit();
+    renderEoiClarity();
+    markNextMatch();
+    renderAdminOperations();
+    renderAuditFilters();
+    renderTournamentPreview();
+    installTournamentAutosave();
+    installMediaQualityChecks();
+    installCalendarLinks();
     const signedInPlayer = evalGlobal("playerToken");
     const playerAlertPollingAllowed = signedInPlayer && !adminToken();
     if (playerAlertPollingAllowed && !enhancement.alertPollTimer) enhancement.alertPollTimer = setInterval(() => { if (evalGlobal("playerToken") && !adminToken() && !document.activeElement?.matches("input,select,textarea,[contenteditable=\"true\"]") && !$("mediaFile")?.files?.length) refresh(); }, 10000);

@@ -4,7 +4,8 @@ Shared social badminton app for Kingsmen Badminton Club. It keeps player EOIs,
 events, scores, media, payment tracking, shuttle costs, admin edits, and
 player-hour prorating in one Netlify + Supabase app.
 
-Players do not need an account. They choose their name from the roster.
+Players sign in with a 4 or 6 digit PIN. Admin roles can be activated from the
+same player session when that player has an assigned role.
 
 ## Database Setup
 
@@ -14,9 +15,10 @@ Players do not need an account. They choose their name from the roster.
 4. If upgrading an older social app database, run any migrations you have not
    already applied, then run `supabase/migrations/005_kingsmen_badminton.sql`
    and `supabase/migrations/006_badminton_score_format.sql`.
-5. Run `supabase/migrations/007_locations_and_court_numbers.sql` and
-   `supabase/migrations/008_live_scoring_schedule.sql` for the latest location,
-   court, live-scoring, pairing, and schedule features.
+5. Run every migration in `supabase/migrations/` that is newer than the last
+   migration already applied to your project. The current quality-foundation
+   migration is `024_quality_foundations.sql`; it adds optimistic-concurrency
+   revisions, indexes, and live-score conflict protection.
 
 The schema creates the Kingsmen roster:
 
@@ -85,8 +87,11 @@ limits.
   - Ashik: `0416648100`
 - Media upload and download remain available for session photos/videos.
 
-## Identity Note
+## Operations checklist
 
-Because players do not sign in, anyone with the public link can choose any
-roster name. That keeps the app friction-free, but a future player PIN or email
-login would be needed for stronger identity protection.
+- Check `/.netlify/functions/api?action=health` after every deployment.
+- Confirm the returned `appVersion` matches the Git commit deployed to Netlify.
+- Run pending Supabase migrations before enabling a new release.
+- Export club data periodically from the Admin area before large changes.
+- Never expose the Supabase service-role key in the browser or commit production
+  environment variables to the repository.
